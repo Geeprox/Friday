@@ -9,6 +9,7 @@ import math
 
 from .interaction import InteractionEngine, body_gestures
 from .interaction import load
+from .gestures import BINDABLE_HAND_LABELS, HAND_MAX_GAP
 
 
 class InteractionFleet:
@@ -33,20 +34,20 @@ class InteractionFleet:
             engine=InteractionEngine(camera,session)
             if old and old['engine'].rearm:engine.require_release(not_before=old['engine'].release_not_before)
             self.cameras[camera] = dict(session=session, engine=engine,game_window=old.get('game_window')if old else None,
-                                        owner=None, candidate=None, since=0, suppress_ok=False,
+                                        owner=None, candidate=None, since=0, suppress_ok=False, last_hand=None,
                                         seen=-100., people=0, gestures={}, state='connecting')
         return self.cameras[camera]
 
     def clear(self, camera, *, voice=True):
         item = self.cameras.get(camera)
         if item:
-            item.update(owner=None, candidate=None, suppress_ok=False, gestures={}, people=0, state='waiting')
+            item.update(owner=None, candidate=None, suppress_ok=False, gestures={}, people=0, state='waiting', last_hand=None)
             item['engine'].reset()
             if voice:
                 item['voice_enabled'] = False
                 self.voice_revoked(camera)
 
-    def operator(self, camera, session, people, hands, now, *, stationary=True):
+    def operator(self, camera, session, people, hands, now, *, stationary=True, hands_sampled=True):
         item = self.session(camera, session)
         if not math.isfinite(now) or now < item['seen']:
             self.clear(camera)
@@ -73,6 +74,17 @@ class InteractionFleet:
             if len(matches) == 1:
                 item['owner'] = owner = matches[0]['id']
                 item['suppress_ok'] = True
+        # 单人身体可以逐帧选择；多人切换只消费新的手部采样。
+        previous = item['last_hand']
+        if previous is None or not 0 <= now - previous <= HAND_MAX_GAP:
+            if owner is not None or len(people) != 1:
+                item['candidate'] = None
+        if hands_sampled:
+            item['last_hand'] = now
+        if not hands_sampled and (owner is not None or len(people) != 1):
+            if item['candidate'] not in ids:
+                item['candidate'] = None
+            return owner
         candidates = {h.get('person_id') for h in hands if h.get('gesture') == 'ok'} & ids.keys()
         if owner is not None:
             # A sole-body selection must not lock out someone entering later.
@@ -104,11 +116,11 @@ class InteractionFleet:
             if person_id:
                 self.operators[person_id] = now
             labels = {h.get('gesture') for h in hands if h.get('person_id') == owner}
-            if 'ok' not in labels:
+            if hands_sampled and 'ok' not in labels:
                 item['suppress_ok'] = False
         return owner
 
-    def update(self, camera, session, people, hands, registration, active, now, *, game_window=None, game_active=False,captured_mono=None):
+    def update(self, camera, session, people, hands, registration, active, now, *, game_window=None, game_active=False,captured_mono=None, hands_sampled=True):
         stationary = registration.get('status') not in {'moving', 'settling', 'lost', 'stale'}
         item=self.session(camera,session)
         if game_window is not None:
@@ -122,13 +134,15 @@ class InteractionFleet:
             item['engine'].require_release('game_active'if game_active else 'input_paused',not_before=now)
             item.update(seen=now, people=len(people),state='game'if game_active else 'paused')
             return []
-        owner = self.operator(camera, session, people, hands, now, stationary=stationary)
+        owner = self.operator(camera, session, people, hands, now, stationary=stationary, hands_sampled=hands_sampled)
         item = self.cameras[camera]
         person = next((p for p in people if p['id'] == owner), None)
         actor = ('person', self.identity(person)) if person and self.identity(person) else ('track', camera, session, owner)
         visible = body_gestures(person) if person else set()
-        from .gestures import BINDABLE_HAND_LABELS
-        visible.update('hand.'+h['gesture'] for h in hands if h.get('person_id') == owner and h.get('gesture') in BINDABLE_HAND_LABELS)
+        if hands_sampled:
+            visible.update('hand.'+h['gesture'] for h in hands if h.get('person_id') == owner and h.get('gesture') in BINDABLE_HAND_LABELS)
+        elif item['last_hand'] is not None and 0 <= now - item['last_hand'] <= HAND_MAX_GAP:
+            visible.update(g for g in item['gestures'].get(actor, ()) if g.startswith('hand.'))
         item['gestures'] = {actor:visible} if person else {}
         # Only release a shared latch when every fresh view of the person has
         # released. A missing or stale view cannot keep a latch forever.
@@ -137,7 +151,7 @@ class InteractionFleet:
             if not any(now-c['seen'] < 1.5 and gesture in c['gestures'].get(who, set()) for c in self.cameras.values()):
                 self.latched.discard(key)
         admitted_hands = [h for h in hands if not (item['suppress_ok'] and h.get('gesture') == 'ok')]
-        events = item['engine'].update(people, admitted_hands, owner, registration, active, now,observed_hands=hands,observed_mono=captured_mono)
+        events = item['engine'].update(people, admitted_hands, owner, registration, active, now,observed_hands=hands,observed_mono=captured_mono, hands_sampled=hands_sampled)
         result = []
         bindings = {b.id:b for b in item['engine'].config.bindings}
         self.recent = {k:t for k,t in self.recent.items() if now-t < 10}

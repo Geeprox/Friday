@@ -174,3 +174,23 @@ async def test_start_does_not_start_a_worker_and_stop_is_token_bound():
         assert [c[0] for c in calls] == ['/api/practice/start', '/api/practice/stop', '/api/practice/stop']
     finally:
         await service.client.aclose()
+
+
+@pytest.mark.parametrize("interrupt", ["timeout", "owner", "session"])
+def test_cache_invalidates_hand_lesson_on_gap_or_identity_change(lesson, interrupt):
+    practice, clock = lesson
+    token = practice.begin("hand.ok", ["cam"])["token"]
+    person = {"id": 1, "joints": {}}
+    def sample(t, fresh, who=person, session="s"):
+        clock[0] = t
+        practice.observe("cam", session, [who], [{"person_id": who["id"], "gesture":"ok"}],
+                         {"status":"locked"}, t, t, hands_sampled=fresh)
+    sample(0, True)
+    sample(.3, True)
+    assert practice.status(token)["progress"] > 0
+    t = 1.2 if interrupt == "timeout" else .6
+    sample(t, False, dict(person,id=2) if interrupt=="owner" else person,
+           "new" if interrupt=="session" else "s")
+    assert practice.status(token)["progress"] == 0
+    sample(t+.05, True)
+    assert practice.status(token)["phase"] != "success"

@@ -152,3 +152,135 @@ def test_small_or_rotated_face_never_qualifies_as_attention():
     assert not rows[0]['gaze_candidate'] and not rows[0]['eyes_clear']
     matrix[0][0] = math.nan
     assert face_rows(result, 640, 480) == []
+
+
+def test_unused_dip_outside_crop_still_has_observed_open_hand():
+    result = hand()
+    result.hand_landmarks[0][HAND.index('ringDIP')].x = 1.02
+    detection, = hand_rows(result, 1)
+    assert 'ringDIP' not in detection['joints']
+    assert classify_hand(detection['joints']) == 'open_palm'
+
+
+@pytest.mark.parametrize('label', ['shaka', 'horns'])
+def test_crop_can_recover_weak_full_frame_hand_without_double_counting(label):
+    from tests.embodied.test_common_hand_poses import hand as shaped
+    from homeplane.embodied.portable_vision import merge_hand
+
+    def estimate(target, presence):
+        raw = hand()
+        points = shaped(target)
+        for name, point in points.items():
+            raw.hand_landmarks[0][HAND.index(name)] = Row(x=point['x'], y=point['y'])
+        raw.handedness[0][0].presence = presence
+        return hand_rows(raw, 3)[0]
+
+    hands = [estimate('fist', .80)]
+    merge_hand(hands, estimate(label, .94))
+    merge_hand(hands, estimate('fist', .81))
+    assert len(hands) == 1 and hands[0]['sample_id'] == 3
+    assert classify_hand(hands[0]['joints']) == label
+
+
+def test_uncertain_chirality_requires_two_separated_body_wrists():
+    raw = hand()
+    raw.handedness[0][0].score = .58
+    left = ('left', {'x':.2, 'y':.3})
+    right = ('right', {'x':.5, 'y':.85})
+    assert hand_rows(raw, 1) == []
+    assert hand_rows(raw, 1, wrists=[right]) == []
+    assert hand_rows(raw, 1, wrists=[('left', {'x':.505,'y':.85}), right]) == []
+    assert hand_rows(raw, 1, wrists=[left, right])[0]['side'] == 'right'
+    raw.handedness[0][0].presence = .6
+    assert hand_rows(raw, 1, wrists=[left, right]) == []
+
+
+def test_near_wrist_crop_includes_spread_fingertips():
+    worker = PortableVision.__new__(PortableVision)
+    worker.pose = Row(detect=lambda _: Row(pose_landmarks=[pose()]))
+    worker.sequence, worker.last_hands, worker.last_sample = 0, [], -math.inf
+    crops = []
+    def detect(image):
+        crops.append(image.shape[:2])
+        return Row(hand_landmarks=[], handedness=[])
+    worker.hand = Row(detect=detect)
+    worker.detect(dict(jpeg=jpeg()))
+    height, width = crops[1]
+    assert height >= 38 and width >= 38
+
+
+@pytest.mark.parametrize('extended', [('index', 'little'), ('index',), ('little',), (),
+                                      ('index', 'middle'), ('index', 'middle', 'ring', 'little')])
+def test_world_horns_requires_both_outer_fingers_and_two_curls(extended):
+    import numpy as np
+    from homeplane.embodied.onnx_vision import world_horns
+    points = [(0, 0, 0), (-.4, .2, 0), (-.6, .5, 0), (-.4, .7, .1), (-.2, .8, .1)]
+    for x, name in zip((-.35, -.1, .12, .33), ('index', 'middle', 'ring', 'little')):
+        segments = [(1, 0), (1.4, 0), (1.7, 0), (1.9, 0)] if name in extended else [
+            (1, 0), (1.3, 0), (1.3, .25), (1.1, .25)]
+        points.extend((x, y, z) for y, z in segments)
+    expected = extended == ('index', 'little')
+    points = np.asarray(points)
+    for angle in (0, .8, 1.3):
+        c, s = math.cos(angle), math.sin(angle)
+        rotated = points @ np.array([[1, 0, 0], [0, c, s], [0, -s, c]])
+        assert world_horns(rotated) is expected
+        rotated[:, 0] *= -1
+        assert world_horns(rotated) is expected
+    points[4] = (-1.5, .8, 0)
+    assert not world_horns(points)
+
+
+def test_world_evidence_can_recover_projected_pointing_but_requires_complete_hand():
+    from tests.embodied.test_common_hand_poses import hand as fixture_hand
+    from tests.embodied.test_gestures import HandTests
+    raw = hand()
+    joints = fixture_hand('horns')
+    HandTests().folded(joints, 'little')
+    for name, p in zip(HAND, raw.hand_landmarks[0]):
+        if name in joints:
+            p.x, p.y = joints[name]['x'], joints[name]['y']
+    raw.handedness[0][0].world_horns = True
+    row, = hand_rows(raw, 1)
+    assert classify_hand(row['joints']) == 'pointing'
+    assert classify_hand(row['joints'], world_horns=row['world_horns']) == 'horns'
+    raw.hand_landmarks[0][HAND.index('littleDIP')].x = -1
+    row, = hand_rows(raw, 2)
+    assert 'world_horns' not in row
+
+
+def test_single_person_mask_requires_connected_torso_wrist_and_palm():
+    import numpy as np
+    from homeplane.embodied.portable_vision import hand_in_person_mask
+    body = body_rows([pose()])[1][0]['joints']
+    joints = hand_rows(hand(), 1)[0]['joints']
+    mask = np.zeros((100,100),np.uint8)
+    mask[20:95,25:77] = 255
+    assert hand_in_person_mask(mask, body, joints, 1)
+    mask[53:56] = 0
+    assert not hand_in_person_mask(mask, body, joints, 1)
+    mask[:] = 255
+    assert not hand_in_person_mask(mask, body, joints, 1)
+
+
+def test_mask_association_is_emitted_only_for_fresh_hand_samples(monkeypatch):
+    import numpy as np
+    worker = PortableVision.__new__(PortableVision)
+    def detect(image):
+        mask = np.zeros(image.shape[:2], np.uint8)
+        height, width = mask.shape
+        mask[height//5:height*19//20,width//4:width*4//5] = 255
+        return Row(pose_landmarks=[pose()], single_mask=mask)
+    worker.pose = Row(detect=detect)
+    worker.hand = Row(detect=lambda _: hand())
+    worker.crop = lambda *_: None
+    worker.sequence, worker.last_hands, worker.last_sample = 0, [], -math.inf
+    now = [1.0]
+    monkeypatch.setattr('homeplane.embodied.portable_vision.time.monotonic', lambda: now[0])
+    request = dict(jpeg=jpeg(), hand_interval_ms=200)
+    fresh = worker.detect(request)
+    assert fresh['hands'][0]['mask_owner_box'] == fresh['boxes'][0]
+    now[0] += .05
+    cached = worker.detect(request)
+    assert cached['hands'][0]['sample_id'] == fresh['hands'][0]['sample_id']
+    assert 'mask_owner_box' not in cached['hands'][0]

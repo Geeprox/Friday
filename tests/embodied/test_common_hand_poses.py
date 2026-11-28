@@ -107,3 +107,154 @@ def test_geometry_to_bound_fleet_event_and_cross_camera_deduplication(monkeypatc
                                         observed, 'SYNTHETIC-member', track=99)
     fleet.clear(camera)
     assert not fleet.current(event, 12.2)
+
+
+@pytest.mark.parametrize("label", ["ok", "yeah", "open_palm", "pointing", "fist",
+                                   "thumb_up", "thumb_down", "shaka", "horns"])
+def test_slow_samples_complete_requested_hand_lesson(label):
+    from homeplane.embodied.gestures import GestureStabilizer
+    helper = hand_fixtures.HandTests()
+    joints = helper.hand()
+    if label in {"fist", "thumb_up", "thumb_down", "shaka", "horns"}:
+        joints = hand(label)
+    elif label == "ok":
+        joints["indexTip"] = dict(joints["thumbTip"])
+    elif label in {"pointing", "yeah"}:
+        for finger in (("middle", "ring", "little") if label == "pointing" else ("ring", "little")):
+            helper.folded(joints, finger)
+    raw = classify_hand(joints)
+    assert raw == label
+    clock = [0.]
+    practice = RecognitionPractice(clock=lambda: clock[0])
+    gesture = "hand.point" if label == "pointing" else "hand." + label
+    token = practice.begin(gesture, ["cam"])["token"]
+    stabilizer = GestureStabilizer()
+    for idx, at in enumerate([0., .63, 1.27, 1.91]):
+        clock[0] = at
+        stable = stabilizer.update((1, "left"), raw, joints["wrist"], at, idx)
+        practice.observe("cam", "session", [{"id": 1}], [
+            {"person_id": 1, "gesture": stable, "ray": {"direction": [1, 0]}}
+        ], {"status": "locked"}, at, at)
+        assert (practice.status(token)["phase"] == "success") == (idx == 3)
+
+
+def test_disagreement_or_wrist_jump_breaks_slow_confirmation():
+    from homeplane.embodied.gestures import GestureStabilizer
+    stable = GestureStabilizer()
+    for idx, (label, x) in enumerate([("ok", .4), ("ok", .4), ("fist", .4),
+                                       ("ok", .4), ("ok", .4), ("ok", .7)]):
+        assert stable.update("hand", label, {"x": x, "y": .5}, idx*.6, idx) == "hand_visible"
+
+
+@pytest.mark.parametrize("label", ["fist", "thumb_up", "thumb_down", "shaka", "horns"])
+def test_observed_curled_ring_does_not_require_its_knuckle(label):
+    joints = hand(label)
+    del joints["ringMCP"]
+    assert classify_hand(joints) == label
+    del joints["ringTip"]
+    assert classify_hand(joints) != label
+
+
+@pytest.mark.parametrize('label', ['thumb_down', 'shaka', 'horns'])
+@pytest.mark.parametrize('mirrored', [False, True])
+def test_distal_thumb_evidence_with_hidden_base(label, mirrored):
+    joints = hand(label)
+    del joints['thumbCMC']
+    if mirrored:
+        for point in joints.values():
+            point['x'] = 1 - point['x']
+    assert classify_hand(joints) == label
+    del joints['thumbIP']
+    assert classify_hand(joints) != label
+
+
+@pytest.mark.parametrize('label', ['fist', 'thumb_up'])
+def test_hidden_thumb_base_cannot_invert_vertical_direction(label):
+    joints = hand(label)
+    del joints['thumbCMC']
+    assert classify_hand(joints) not in {'thumb_down', 'shaka', 'horns'}
+
+
+@pytest.mark.parametrize("degrees, expected", [(55, "thumb_down"), (60, "thumb_down"),
+                                              (80, "hand_visible"), (90, "hand_visible")])
+@pytest.mark.parametrize("mirror", [False, True])
+def test_downward_diagonal_both_hands(degrees, expected, mirror):
+    import math
+    joints = hand("thumb_down")
+    angle = math.radians(degrees)
+    for p in joints.values():
+        x, y = (p["x"]-.5)*16/9, p["y"]-.5
+        p["x"] = .5 + (.75 if not mirror else -.75)*(x*math.cos(angle)-y*math.sin(angle))*9/16
+        p["y"] = .5 + .75*(x*math.sin(angle)+y*math.cos(angle))
+    assert classify_hand(joints) == expected
+
+
+@pytest.mark.parametrize("mirror", [False, True])
+def test_phone_with_pinky_extended_sideways(mirror):
+    joints = hand("shaka")
+    joints["littlePIP"].update(x=.673,y=.77)
+    joints["littleTip"].update(x=.696,y=.88)
+    if mirror:
+        for p in joints.values():
+            p["x"] = 1-p["x"]
+    assert classify_hand(joints) == "shaka"
+    joints["littleTip"] = dict(joints["littleMCP"])
+    assert classify_hand(joints) != "shaka"
+
+
+@pytest.mark.parametrize("mirror", [False, True])
+@pytest.mark.parametrize(("tip", "expected"), [
+    ((.696, .88), "shaka"),        # 小指沿侧面伸直，拇指朝上。
+    ((.683, .807), "hand_visible"), # 小指部分伸出，无法确认握回。
+    ((.65, .69), "thumb_up"),      # 小指尖已折回指根附近。
+])
+def test_upright_thumb_depends_on_visible_pinky(tip, expected, mirror):
+    joints = hand("thumb_up")
+    joints["littlePIP"].update(x=.673, y=.77)
+    joints["littleTip"].update(x=tip[0], y=tip[1])
+    if mirror:
+        for point in joints.values():
+            point["x"] = 1 - point["x"]
+    assert classify_hand(joints) == expected
+
+
+@pytest.mark.parametrize("mirror", [False, True])
+@pytest.mark.parametrize(("tip_y", "expected"), [
+    (.48, "thumb_up"),       # 朝上伸出，但投影离食指根很近。
+    (.56, "hand_visible"),   # 正在收回，尚未落到拳面。
+])
+def test_foreshortened_thumb_near_knuckle_is_not_a_fist(mirror, tip_y, expected):
+    joints = hand("thumb_up")
+    joints["thumbCMC"].update(x=.42, y=.72)
+    joints["thumbMP"].update(x=.43, y=.65)
+    joints["thumbIP"].update(x=.43, y=(.65 + tip_y)/2)
+    joints["thumbTip"].update(x=.43, y=tip_y)
+    if mirror:
+        for point in joints.values():
+            point["x"] = 1 - point["x"]
+    assert classify_hand(joints) == expected
+
+
+@pytest.mark.parametrize("mirrored", [False, True])
+def test_horns_with_pinky_spread_sideways(mirrored):
+    joints = hand("horns")
+    joints["littlePIP"].update(x=.673, y=.77)
+    joints["littleTip"].update(x=.696, y=.88)
+    if mirrored:
+        for point in joints.values():
+            point["x"] = 1 - point["x"]
+    assert classify_hand(joints) == "horns"
+    joints["littleTip"] = dict(joints["littleMCP"])
+    assert classify_hand(joints) != "horns"
+    del joints["littleTip"]
+    assert classify_hand(joints) != "horns"
+
+
+def test_horns_accepts_thumb_pressed_against_curled_middle_knuckle():
+    joints = hand("horns")
+    for name, x, y in (("thumbCMC",.36,.68), ("thumbMP",.38,.59),
+                       ("thumbIP",.42,.51), ("thumbTip",.46,.43)):
+        joints[name].update(x=x,y=y)
+    assert classify_hand(joints) == "horns"
+    joints["thumbTip"].update(x=.24,y=.40)
+    assert classify_hand(joints) != "horns"

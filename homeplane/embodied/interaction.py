@@ -12,7 +12,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from .paths import PRIVATE
 from .smart_home import WindowGesture
 
-from .gestures import BINDABLE_HAND_LABELS
+from .gestures import BINDABLE_HAND_LABELS, HAND_HOLD_SECONDS
+
+OBSERVATION_MAX_GAP = 1.0
 
 GESTURES={'body.arms_open':'双臂打开','body.arms_close':'双臂合上','body.hands_up':'双手举高','body.left_hand_up':'举起左手','body.right_hand_up':'举起右手','body.squat':'下蹲','body.lean_left':'身体向左倾','body.lean_right':'身体向右倾','hand.open_palm':'张开手掌','hand.yeah':'剪刀手','hand.ok':'OK','hand.fist':'握拳','hand.thumb_up':'点赞','hand.thumb_down':'拇指向下','hand.shaka':'电话手势','hand.horns':'摇滚手势'}
 ACTIONS={'on','off','open','close','position:0','position:25','position:50','position:75','position:100','mode:cool','mode:heat','mode:off','mode:auto','mode:heat_cool','mode:dry','mode:fan_only'}
@@ -153,14 +155,14 @@ class InteractionEngine:
         self.camera,self.session=camera,session
         self.arms=WindowGesture();self.config=Configuration(revision=0)
         self.loaded=-100.;self.owner=None;self.holds={};self.last={};self.pending=None;self.sequence=0
-        self.latched=set();self.released={};self.observed=None
+        self.latched=set();self.released={};self.observed=None;self.hand_observed=None
         self.rearm=False;self.rearm_owner=None;self.rearm_revision=None;self.game_releases=set()
         self.release_not_before=-math.inf
         self.public={'enabled':False,'selection':None,'reason':'not_enabled'}
 
     def reset(self):
         self.arms.reset();self.holds.clear();self.pending=None;self.owner=None
-        self.latched.clear();self.released.clear();self.observed=None
+        self.latched.clear();self.released.clear();self.observed=None;self.hand_observed=None
         if self.rearm:
             self.rearm_owner=None;self.rearm_revision=None;self.game_releases.clear()
 
@@ -183,7 +185,7 @@ class InteractionEngine:
             self.latched.discard((person['id'],binding.id))
             self.holds.pop((person['id'],binding.id),None)
 
-    def update(self,people,hands,owner,registration,active,now,*,observed_hands=None,observed_mono=None):
+    def update(self,people,hands,owner,registration,active,now,*,observed_hands=None,observed_mono=None,hands_sampled=True):
         if now-self.loaded>1:
             try:
                 next_config=load()
@@ -201,7 +203,7 @@ class InteractionEngine:
         if self.observed is not None:
             if observed <= self.observed:
                 return []
-            if observed - self.observed > 1:
+            if observed - self.observed > OBSERVATION_MAX_GAP:
                 self.reset();self.owner=owner
         self.observed = observed
         # 冷却只需要保留近期轨迹。持续运行的镜头会不断产生新轨迹编号。
@@ -214,6 +216,19 @@ class InteractionEngine:
             self.game_releases={b.id for b in bindings}
             self.latched.update((owner,b.id)for b in bindings if b.gesture!='hand.point')
             self.pending=None
+        if self.hand_observed is not None and observed-self.hand_observed > OBSERVATION_MAX_GAP:
+            for b in bindings:
+                if b.gesture.startswith('hand.'):
+                    self.holds.pop((owner,b.id),None)
+                    self.holds.pop(('ray',owner,b.id),None)
+                    self.released.pop((owner,b.id),None)
+                    self.released.pop(('game',owner,b.id),None)
+            self.pending=None
+            self.hand_observed=None
+        if hands_sampled:
+            self.hand_observed=observed
+        else:
+            hands=[]
         labels={h.get('gesture')for h in hands if h.get('person_id')==owner}
         release_hands=hands if observed_hands is None else observed_hands
         event=self.arms.update(person,observed)
@@ -224,7 +239,7 @@ class InteractionEngine:
         pointing_ready=registration.get('status')=='locked' and not registration.get('compensated',False)
         if not pointing_ready:self.pending=None
         for b in bindings:
-            if b.gesture=='hand.point':continue
+            if b.gesture=='hand.point' or (not hands_sampled and b.gesture.startswith('hand.')):continue
             key=(owner,b.id)
             if b.id in self.game_releases:
                 self._release_binding(b,person,release_hands,now,observed)
@@ -237,12 +252,13 @@ class InteractionEngine:
             self.released.pop(key,None)
             self.holds.setdefault(key,observed)
             moving_arms=b.gesture in {'body.arms_open','body.arms_close'}
-            if (key not in self.latched and (moving_arms or observed-self.holds[key]>=.7)
+            hold = HAND_HOLD_SECONDS if b.gesture.startswith("hand.") else .7
+            if (key not in self.latched and (moving_arms or observed-self.holds[key]>=hold)
                     and observed-self.last.get(key,-100)>REPEAT_SECONDS):
                 self.last[key]=observed;self.latched.add(key);result.append(b)
         candidates=[]
         for b in bindings:
-            if b.gesture=='hand.point' and b.id in self.game_releases:
+            if hands_sampled and b.gesture=='hand.point' and b.id in self.game_releases:
                 self._release_binding(b,person,release_hands,now,observed)
         for hand in hands:
             if not pointing_ready or hand.get('person_id')!=owner or hand.get('gesture')!='pointing' or not hand.get('ray'):continue
@@ -263,7 +279,7 @@ class InteractionEngine:
             if observed-self.holds[key]>=.8:self.pending=(b,observed+3)
             for k in list(self.holds):
                 if k[0]=='ray'and k!=key:self.holds.pop(k,None)
-        else:
+        elif hands_sampled:
             for k in list(self.holds):
                 if k[0]=='ray':self.holds.pop(k,None)
         if self.pending and now>self.pending[1]:self.pending=None

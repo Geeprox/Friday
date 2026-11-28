@@ -51,18 +51,47 @@ class Pose:
         bgr = np.ascontiguousarray(rgb[:, :, ::-1])
         height, width = rgb.shape[:2]
         rows = []
-        for person in self.detector.infer(bgr)[:6]:
+        people = self.detector.infer(bgr)
+        single_mask = None
+        for person in people[:6]:
             # 上游预处理会原位调整关键点，传独立副本避免污染检测结果。
             result = self.landmarker.infer(bgr, person.copy())
             if result is None:
                 continue
+            if len(people) == 1:
+                single_mask = result[3]
             landmarks = result[1][:33]
             rows.append([Row(x=float(p[0]/width), y=float(p[1]/height),
                              visibility=float(p[3]), presence=float(p[4])) for p in landmarks])
-        return Row(pose_landmarks=rows)
+        return Row(pose_landmarks=rows, single_mask=single_mask)
 
     def close(self):
         self.detector = self.landmarker = None
+
+
+def world_horns(points):
+    """以掌长和指骨长度为尺度复核摇滚手型，旋转手掌不改变距离。"""
+    import numpy as np
+    if points.shape != (21, 3) or not np.isfinite(points).all():
+        return False
+    palm = np.linalg.norm(points[9] - points[0])
+    if palm < 1e-6:
+        return False
+    for base in (5, 9, 13, 17):
+        finger = points[base:base + 4]
+        bones = np.linalg.norm(np.diff(finger, axis=0), axis=1)
+        if min(bones) < .05 * palm:
+            return False
+        reach = np.linalg.norm(finger[3] - finger[0]) / sum(bones)
+        advance = np.linalg.norm(finger[3] - points[0]) - np.linalg.norm(finger[1] - points[0])
+        if base in (5, 17):
+            if reach < .91 or advance < .18 * palm:
+                return False
+        elif reach > .78 or advance > .08 * palm:
+            return False
+    # 拇指须收在拳面附近，排除拇指向外张开的相似手势。
+    anchors = points[[5, 9, 13, 12, 16]]
+    return bool(min(np.linalg.norm(anchors - points[4], axis=1)) < .48 * palm)
 
 
 class Hand:
@@ -86,7 +115,8 @@ class Hand:
             points = result[4:67].reshape(21, 3)
             handedness = float(result[130])
             hands.append([Row(x=float(p[0]/width), y=float(p[1]/height)) for p in points])
-            sides.append([Row(score=max(handedness, 1-handedness),
+            sides.append([Row(score=max(handedness, 1-handedness), presence=float(result[131]),
+                              world_horns=world_horns(result[67:130].reshape(21, 3)),
                               category_name='Right' if handedness >= .5 else 'Left')])
         return Row(hand_landmarks=hands, handedness=sides)
 
