@@ -129,6 +129,16 @@ def classify_hand(joints, ratio=16 / 9, *, world_horns=False):
         if (protrudes_below_fist and not upward_thumb and thumb_straight and thumb_angle > 155
                 and thumb_reach > palm * .75 and dy > max(palm * .20, abs(dx) * .27)):
             return "thumb_down"
+        # 侧视时拇指末段可接近水平。用完整拳面交叉确认指尖确实从拳的下侧伸出。
+        if all_fingers and all(curled.values()) and thumb_straight and not upward_thumb and dy > 0:
+            below_knuckle = thumb["y"] - index["y"]
+            across_knuckle = abs(thumb["x"] - index["x"]) * ratio
+            lowest_fingertip = max(q(n + "Tip")["y"] for n in curled)
+            if (thumb_angle > 155 and thumb_reach > palm * .6
+                    and thumb["y"] - thumb_base["y"] > palm * .15
+                    and below_knuckle > max(across_knuckle, palm * .45)
+                    and thumb["y"] - lowest_fingertip > palm * .25):
+                return "thumb_down"
         # 拇指可横压中指或无名指，不能仅按它与食指根的距离判断收拢。
         tucked = any(
             q(n) and dist(thumb, q(n)) < palm * .5

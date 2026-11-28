@@ -191,6 +191,25 @@ def test_downward_diagonal_both_hands(degrees, expected, mirror):
 
 
 @pytest.mark.parametrize("mirror", [False, True])
+@pytest.mark.parametrize(("tip_y", "expected"), [
+    (.68, "thumb_down"),  # 末段仅微微向下，但指尖明确落在拳面下方。
+    (.64, "hand_visible"),  # 拇指末段水平。
+    (.62, "hand_visible"),  # 拇指末段向上。
+])
+def test_shallow_thumb_below_folded_fist(mirror, tip_y, expected):
+    joints = hand("thumb_down")
+    for name, x, y in (("thumbCMC", .29, .52), ("thumbMP", .37, .64),
+                       ("thumbIP", .45, (.64 + tip_y) / 2), ("thumbTip", .54, tip_y)):
+        joints[name].update(x=x, y=y)
+    if mirror:
+        for point in joints.values():
+            point["x"] = 1 - point["x"]
+    assert classify_hand(joints) == expected
+    del joints["thumbIP"]
+    assert classify_hand(joints) != "thumb_down"
+
+
+@pytest.mark.parametrize("mirror", [False, True])
 def test_phone_with_pinky_extended_sideways(mirror):
     joints = hand("shaka")
     joints["littlePIP"].update(x=.673,y=.77)
