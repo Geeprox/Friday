@@ -155,6 +155,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   const targetPhoto=add(h('div',null,{class:'camera-target-photo',hidden:''}),targetCanvas,targetMarks);
   const targetChoices=h('div',null,{class:'camera-target-choices',role:'group','aria-label':'画面中的目标',hidden:''});
   const status=h('p','正在读取镜头状态…',{class:'camera-status',role:'status','aria-live':'polite'});
+  const gestures=h('span',null,{class:'camera-gestures',hidden:''});
   const powerStatus=h('span','正在读取…');
   const workspace=h('div',null,{class:'camera-workspace'});
   const liveControls=h('div',null,{class:'camera-live-controls',hidden:''});
@@ -199,6 +200,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   }
 
   function clearFrame(){
+   gestures.hidden=true;gestures.textContent='';
    image.hidden=true;
    placeholder.hidden=false;
   }
@@ -552,6 +554,9 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
      if(focused)watch.focus({preventScroll:true});
     }
     if(live()){
+     const names=report.recognition==='running'&&report.recognition_enabled!==false?report.hand_gestures:[];
+     gestures.textContent=names?.length?'刚识别到'+names.join(' · '):'';
+     gestures.hidden=!gestures.textContent;
      image.src=endpoint+'/frame?t='+Date.now();
      image.hidden=false;placeholder.hidden=true;
      if(picker?.revision&&(!selectingMode()||cameraControl?.intent_revision!==picker.revision||!report.follow_target_available))leavePicker();
@@ -578,7 +583,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    if(owns()&&viewing&&live()){clearFrame();if(!picker)setStatus('暂时无法显示画面');}
   });
   const viewActions=add(h('div',null,{class:'camera-view-actions'}),watch,recordings);
-  const viewBar=add(h('div',null,{class:'camera-view-bar'}),status,viewActions);
+  const viewBar=add(h('div',null,{class:'camera-view-bar'}),status,gestures,viewActions);
   const picture=add(h('div',null,{class:'camera-picture'}),pickerTools,frame,targetPhoto,targetChoices,viewBar,surveyRow);
   add(liveControls,add(h('div'),h('h3','镜头模式'),followControls),add(h('div'),h('h3','调整视角'),cameraControls));
   const powerRow=add(h('div',null,{class:'camera-power-row'}),add(h('div'),ico('power'),powerStatus),close,refresh,

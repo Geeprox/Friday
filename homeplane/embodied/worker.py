@@ -35,6 +35,7 @@ from homeplane.embodied.paths import (
 )
 from homeplane.embodied.plugins import configure
 from homeplane.embodied.previews import PreviewPool, camera_is_open
+from homeplane.embodied.interaction import recent_preview_gestures
 from homeplane.embodied.ptz_control import CameraLease, LocalFollower, SearchPlanner, Transport
 from homeplane.embodied.room_session import RoomSession, close_rooms
 from homeplane.embodied.room_protocol import unavailable_layout
@@ -227,7 +228,7 @@ def invalidate_calibration():
     if camera_planner:
         camera_planner.views.clear()
     games.suspend_source()
-    state.update(room=None, people=[], hands=[], animals=[], animals_current=False, _patrol_view=None,
+    state.update(room=None, people=[], hands=[], _preview_gestures={}, animals=[], animals_current=False, _patrol_view=None,
                  tracking_current=False, scene={'objects': []})
 
 
@@ -590,6 +591,7 @@ def view():
     now = time.monotonic()
     result = dict(state)
     result.pop('_patrol_view', None)
+    result.pop('_preview_gestures', None)
     result.pop('_wake_source', None)
     result['party_camera'] = party_camera.status(camera=SELECTED['id'],session=state.get('session_id'),
         frame_mono=last_frame,now=now)
@@ -1146,6 +1148,9 @@ async def run_source(my_generation):
                 state.update(
                     status="live",
                     recognition="running",
+                    _preview_gestures=recent_preview_gestures(
+                        state.get('_preview_gestures', {}) if state.get('status') == 'live' else {},
+                        hands, item['received_at']),
                     tracking_current=tracks.input_valid,
                     animals=animals,animals_current=pet_tracks.current,
                     animals_intent=pet_revision if pet_active else None,pet_tracking=pet_tracks.public(),
@@ -1522,6 +1527,8 @@ async def preview_status(camera_id: str, request: Request):
             "frames": state["processed_frames"],
             "primary": True,
             "recognition": session['recognition'],
+            "hand_gestures": [name for name, stamp in state.get("_preview_gestures", {}).items()
+                              if 0 <= time.time() - stamp < 2] if session["recognition"] == "running" else [],
             "frame_available": session['recognition'] == 'recovering' and bool(primary_recovery_frame()),
             "camera_control": report.get('camera_control'),
             "pet_tracking": report.get('pet_tracking'),

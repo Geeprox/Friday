@@ -9,6 +9,7 @@ import time
 from .capture_environment import capture_environment
 from .paths import DATA, MODELS, PROJECT, PYTHON, camera, camera_storage
 from .camera_director import CameraDirector
+from .interaction import recent_preview_gestures
 from .camera_follow_picker import CameraFollowPicker
 from .camera_intent import (
     CAMERA_MODES, PET_MODES, TARGET_MODES, CameraIntentStore, camera_intent_readback, finish_camera_survey,
@@ -124,6 +125,8 @@ class PreviewPool:
             audio_enabled=bool(self.recognize and self.on_audio),
             recognition='running' if recognizing else 'recovering' if recovering else 'waiting',
             frame_available=bool(self._recovery_frame(camera_id, item)),
+            hand_gestures=[name for name,stamp in item.get('recent_gestures', {}).items()
+                           if 0 <= time.time() - stamp < 2] if recognizing else [],
             latency_ms=item.get('latency_ms') if recognizing else None,
             people=item.get('people',0) if fresh else 0,
             hands=item.get('hands',0) if fresh else 0,
@@ -591,6 +594,9 @@ class PreviewPool:
                             await self.on_observation(observation, process)
                         if not self.source_current(selected['id'], process):break
                         item.update(people=len(observation['people']),hands=len(observation['hands']),
+                            recent_gestures=recent_preview_gestures(
+                                item.get('recent_gestures', {}) if item['state'] == 'live' else {},
+                                observation['hands'], packet['received_at']),
                             animals=len(observation.get('animals',[])),pet_tracking=observation.get('pet_tracking'),
                             room_service=observation.get('room_service'))
                         stage='capture'
