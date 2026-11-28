@@ -176,7 +176,8 @@ def test_hidden_thumb_base_cannot_invert_vertical_direction(label):
 
 
 @pytest.mark.parametrize("degrees, expected", [(55, "thumb_down"), (60, "thumb_down"),
-                                              (80, "hand_visible"), (90, "hand_visible")])
+                                              (70, "thumb_down"), (80, "hand_visible"),
+                                              (90, "hand_visible"), (110, "hand_visible")])
 @pytest.mark.parametrize("mirror", [False, True])
 def test_downward_diagonal_both_hands(degrees, expected, mirror):
     import math
