@@ -214,3 +214,72 @@ def test_mask_owner_requires_same_tracked_box_and_single_hand_in_stationary_view
     hand["mask_owner_box"]["x"] += .05
     room.update(b"", [person], [hand], .4)
     assert hand["person_id"] is None
+
+
+def test_sparse_wrist_with_opposite_model_side_stabilizes():
+    room, person, hand = GeometryTests().fixture()
+    hand["side"] = "left"
+    for index in range(5):
+        if index % 2:
+            person["joints"].pop("leftWrist")
+        else:
+            person["joints"]["leftWrist"] = dict(x=.62, y=.52, confidence=.9)
+        hand["sample_id"] = index
+        room.update(b"", [person], [hand], index * .5)
+    assert hand["gesture"] == "pointing"
+
+
+def test_point_target_hold_survives_model_side_changes_and_cached_frames():
+    room, person, hand = GeometryTests().fixture()
+    person["joints"]["leftWrist"] = dict(x=.62, y=.52, confidence=.9)
+    for index in range(43):
+        sampled = index % 3 == 0
+        hand["sample_id"] = index // 3
+        hand["side"] = ("left", "right", "unknown")[hand["sample_id"] % 3]
+        result = room.update(b"", [person], [hand], index * .05, hands_sampled=sampled)
+        if not sampled:
+            assert result["pointing"] == []
+    assert result["pointing"][0]["confirmed"] and result["pointing"][0]["target"] == 2
+
+
+def test_both_arms_without_torso_anchor_supply_wrists_only():
+    from homeplane.embodied.stable_tracks import StableTracks
+    tracker = StableTracks()
+    box = dict(x=.1, y=.1, w=.8, h=.8, confidence=.95)
+    arms = {side + part: dict(x=x, y=y, confidence=.95)
+            for side, x in (("left", .3), ("right", .7))
+            for part, y in (("Shoulder", .35), ("Elbow", .5), ("Wrist", .65))}
+    frame = dict(boxes=[box], poses=[dict(joints=arms)])
+    tracker.update(frame, 0)
+    person, = tracker.update(frame, .15)
+    assert person["arm_wrists"] == {k:v for k,v in arms.items() if k.endswith("Wrist")}
+    assert person["joints"] == {} and person["actions"] == ["pose_unknown"]
+    arms["neck"] = dict(x=.99, y=.99, confidence=.95)
+    person, = tracker.update(frame, .30)
+    assert not person.get("arm_wrists")
+
+
+def test_mask_only_hand_lesson_accepts_only_fresh_samples():
+    from homeplane.embodied.practice import RecognitionPractice
+    from tests.embodied.test_common_hand_poses import hand as shape
+    room, person, hand = GeometryTests().fixture()
+    person["joints"] = {}
+    hand["joints"] = shape("horns")
+    now = 0.
+    practice = RecognitionPractice(clock=lambda: now)
+    token = practice.begin("hand.horns", ["test"])["token"]
+    for index in range(24):
+        now = index * .05
+        sampled = index % 3 == 0
+        hand["sample_id"] = index // 3
+        if sampled:
+            hand["mask_owner_box"] = dict(person["box"])
+        else:
+            hand.pop("mask_owner_box", None)
+        previous = practice.status(token)
+        room.update(b"", [person], [hand], now, hands_sampled=sampled)
+        practice.observe("test", "local", [person], [hand], room.reg_info, now, now, hands_sampled=sampled)
+        if not sampled:
+            assert hand["person_id"] is None
+            assert practice.status(token)["progress"] == previous["progress"]
+    assert practice.status(token)["phase"] == "success"

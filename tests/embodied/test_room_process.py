@@ -215,7 +215,8 @@ class Room:
         if mode=='register':stall()
         if check_visibility and mode=='visible':stall()
         return True if check_visibility else None
-    def update(self,*_):
+    def update(self,*_,hands_sampled=True):
+        if mode=='cached':assert not hands_sampled
         if mode=='layout':stall()
         return dict(unavailable_layout(),registration={'status':'locked'})
 serve(sys.stdin.buffer,sys.stdout.buffer,Path(sys.argv[1]),factory=Room,draft_factory=lambda _:None)
@@ -403,3 +404,14 @@ async def test_actual_primary_keeps_video_but_retires_game_input_when_room_fails
     assert scope["state"]["people"] == [] and scope["state"]["hands"] == []
     assert scope["games"].distance == distance and scope["games"].source_resume_required
     assert scope["state"]["game"]["status"] == "paused"
+
+@pytest.mark.asyncio
+async def test_cached_hand_flag_reaches_layout_process(tmp_path):
+    session = fake(tmp_path, "cached")
+    try:
+        now = time.monotonic()
+        assert await session.register(b"SYNTHETIC", [], now)
+        layout = await session.update(b"SYNTHETIC", [], [], now, 640, 360, [], hands_sampled=False)
+        assert layout["registration"]["status"] == "locked"
+    finally:
+        assert await session.close()

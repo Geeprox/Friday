@@ -381,7 +381,7 @@ class Room:
                 self.keyframe_at = now
                 self.keyframe_center = center
 
-    def update(self, picture, people, hands, now, width=1920, height=1080, objects=None, registered=False):
+    def update(self, picture, people, hands, now, width=1920, height=1080, objects=None, registered=False, *, hands_sampled=True):
         if not registered:
             self.register(picture, people, now)
         moving = self.reg_info.get("status") in ("moving", "settling")
@@ -539,12 +539,12 @@ class Room:
             stable_side = hand["side"]
             # 单手与单人骨架的腕点唯一重合时，侧别预测短暂跳变仍属同一只手。
             if (len(hands) == 1 and len(people) == 1 and distance < .06
-                    and len(matches) == 2 and matches[1][0] - distance > .05
+                    and (len(matches) == 1 or matches[1][0] - distance > .05)
                     and person["joints"][body_side].get("confidence", 0) >= .55):
                 stable_side = body_side.removesuffix("Wrist")
             owner_matched = person is not None and distance <= 0.18
             if not moving and len(people) == 1 and len(hands) == 1:
-                if not owner_matched and hand.get("mask_owner_box") == people[0]["box"]:
+                if hands_sampled and not owner_matched and hand.get("mask_owner_box") == people[0]["box"]:
                     person = people[0]
                     owner_matched = True
                 if not people[0]["joints"] and wrist.get("confidence", 0) >= .55:
@@ -568,9 +568,9 @@ class Room:
             raw_gesture = classify_hand(j, ratio, world_horns=hand.get("world_horns") is True)
             hand["raw_gesture"] = raw_gesture
             hand["gesture"] = self.gestures.update(
-                (hand["person_id"], stable_side), raw_gesture, wrist, now, hand.get("sample_id")
+                (hand["person_id"], stable_side), raw_gesture, wrist, now, hand.get("sample_id"), sampled=hands_sampled
             )
-            if hand["gesture"] != "pointing" or person is None:
+            if not hands_sampled or hand["gesture"] != "pointing" or person is None:
                 continue
 
             def length(a, b):
@@ -618,7 +618,7 @@ class Room:
                 continue
             ambiguous = len(candidates) > 1 and candidates[1][0] - candidates[0][0] < math.radians(7)
             target = candidates[0][1]
-            key = (person["id"], hand["side"])
+            key = (person["id"], stable_side)
             seen.add(key)
             old = self.holds.get(key)
             if ambiguous:
@@ -646,7 +646,9 @@ class Room:
                     "approximate": self.config["mode"] == "approximate",
                 }
             )
-        self.holds = {k: v for k, v in self.holds.items() if k in seen and now - v["last"] <= 0.3}
+        current_tracks = {p["id"] for p in people}
+        self.holds = {k: v for k, v in self.holds.items() if 0 <= now - v["last"] <= .3
+                      and (k in seen or (not hands_sampled and not moving and k[0] in current_tracks))}
         return {
             "mode": self.config["mode"],
             "position_status": self.config["mode"] if self.floor is not None else "unconfigured",

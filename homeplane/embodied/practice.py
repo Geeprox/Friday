@@ -124,7 +124,7 @@ class RecognitionPractice:
         lease = self.active()
         return bool(lease and camera in lease['cameras'])
 
-    def observe(self, camera, session, people, hands, registration, now, captured_at):
+    def observe(self, camera, session, people, hands, registration, now, captured_at, *, hands_sampled=True):
         lease = self.active()
         if not lease or camera not in lease['cameras'] or lease['phase'] == 'success':
             return
@@ -145,6 +145,10 @@ class RecognitionPractice:
         hand_lesson = lease['gesture'].startswith('hand.')
         stamp = captured_at if hand_lesson else now
         max_gap = HAND_MAX_GAP if hand_lesson else .5
+        if hand_lesson and not hands_sampled:
+            if item and (item['key'] != key or not 0 <= stamp - item['sample_at'] <= max_gap):
+                self.observers.pop(camera, None)
+            return
         if not item or item['key'] != key or stamp - item['sample_at'] > max_gap:
             from .motion_games import BodyMotion
             from .hiit import HIITCircuit

@@ -316,3 +316,30 @@ def test_audio_packets_do_not_renew_the_video_lease(microphones):
     assert not microphones.voice_current(camera, float('nan'))
     assert microphones.voice_current(other, 11.5001)
     assert microphones.cameras[camera]['voice_seen'] == 10
+
+
+def test_cached_hand_samples_preserve_hold_until_timeout_or_owner_loss(configured):
+    cam = CAMERAS[0]
+    def sample(fleet, t, fresh, track=7):
+        return fleet.update(cam, "session", people(track=track),
+                            hand("open_palm", track) if fresh else [],
+                            {"status": "locked"}, True, t, hands_sampled=fresh)
+
+    fleet = InteractionFleet()
+    bind(fleet, cam)
+    events = []
+    for i in range(25):
+        fresh = i % 3 == 0
+        emitted = sample(fleet, 12 + .05*i, fresh)
+        if not fresh:
+            assert emitted == []
+        events.extend(emitted)
+    assert len(events) == 1 and events[0]["gesture"] == "hand.open_palm"
+
+    for lose_owner in (False, True):
+        fleet = InteractionFleet()
+        bind(fleet, cam)
+        assert not sample(fleet, 12, True)
+        for i in range(1, 22):
+            assert not sample(fleet, 12+.05*i, False, 8 if lose_owner else 7)
+        assert not sample(fleet, 13.1, True)

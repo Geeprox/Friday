@@ -183,13 +183,15 @@ class GestureStabilizer:
     def __init__(self):
         self.items = {}
 
-    def update(self, key, label, wrist, now, sample_id=None):
+    def update(self, key, label, wrist, now, sample_id=None, *, sampled=True):
         self.items = {k: v for k, v in self.items.items() if 0 <= now - v["last"] <= HAND_MAX_GAP}
         old = self.items.get(key)
         if old and sample_id is not None and old["sample_id"] is not None and sample_id <= old["sample_id"]:
             if (sample_id == old["sample_id"] and now - old["last"] < .28
                     and old["label"] == label and old["count"] >= 3):
                 return label
+            return "hand_visible"
+        if not sampled:
             return "hand_visible"
         count = 1
         next_gap = HAND_MAX_GAP
