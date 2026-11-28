@@ -23,7 +23,7 @@ from pathlib import Path
 
 import httpx
 
-from ..ktv_metadata import song_title
+from integrations.ktv_public.audio_format import song_title
 from .budget import EnhancementUnavailable
 from .settings import atomic_json, private_path
 

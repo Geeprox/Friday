@@ -13,22 +13,10 @@ import threading
 import time
 from pathlib import Path
 
+from .local_child import owned
 from .scene_protocol import MAX_JPEG, MAX_REPLY, REASONS, scene_result, source_context
 
 _SLOT = threading.BoundedSemaphore(1)
-_OWNED = set()
-
-
-def owned(task):
-    _OWNED.add(task)
-
-    def done(finished):
-        _OWNED.discard(finished)
-        if not finished.cancelled():
-            finished.exception()
-
-    task.add_done_callback(done)
-    return task
 
 
 class SceneProcess:

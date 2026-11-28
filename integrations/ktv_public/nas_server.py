@@ -27,11 +27,15 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 try:
+    from integrations.ktv_public.audio_format import (
+        AUDIO_PLAYBACK_FIELDS, SFX_ACTIONS, SFX_TTL, VOCAL_PRESETS, audio_playback, song_title,
+    )
     from integrations.ktv_public.coordinator import PERSISTENT_EXPIRY, Coordinator, private_origin
     from integrations.ktv_public.management import Management
     from integrations.ktv_public.tv_update_inbox import TvUpdateInbox
     from integrations.ktv_public.tv_updates import APK_CONTENT_TYPE, UPDATE_APK_PATH, UPDATE_INFO_PATH, TvUpdateStore
-except ImportError:  # Standalone NAS export, alongside this module.
+except ImportError:  # 独立 NAS 部署在同一目录加载。
+    from audio_format import AUDIO_PLAYBACK_FIELDS, SFX_ACTIONS, SFX_TTL, VOCAL_PRESETS, audio_playback, song_title
     from coordinator import PERSISTENT_EXPIRY, Coordinator, private_origin
     from management import Management
     from tv_update_inbox import TvUpdateInbox
@@ -66,14 +70,9 @@ CODES = {
 }
 TERMINAL = {"ready", "failed", "cancelled"}
 THEMES = {"content", "festival", "live"}
-VOCAL_PRESETS = {"dry", "pop", "ktv", "power", "opera", "studio", "echo"}
-SFX_ACTIONS = {"sfx_applause", "sfx_cheer", "sfx_stop"}
-SFX_TTL = 5
 SERVICE_EVENT_LIMIT = 1024 * 1024
 SERVICE_OPERATIONS = {"status", "search", "artwork", "discover", "playlist", "guide", "monitor", "songs", "join",
                       "profile", "theme", "controls", "command", "order", "retry"}
-AUDIO_PLAYBACK_FIELDS = {"audio_capabilities", "vocal_preset", "vocal_preset_state",
-                         "sfx_seq", "sfx_action", "sfx_state"}
 NAMES = (
     "汽水猫",
     "夜航兔",
@@ -158,54 +157,6 @@ def guest_profile(payload):
     ):
         raise Refusal(400, "invalid_profile")
     return payload["nickname"].strip(), payload["avatar"]
-
-
-def audio_playback(value):
-    """Fixed optional TV reports; missing fields keep pre-0.48 clients unavailable."""
-    caps = value.get("audio_capabilities", {"vocal_presets": ["dry"], "sfx": False})
-    if (not isinstance(caps, dict) or (not {"vocal_presets", "sfx"} <= set(caps) or set(caps) - {"vocal_presets", "sfx", "voice_protection"})
-            or not isinstance(caps["vocal_presets"], list) or not 1 <= len(caps["vocal_presets"]) <= len(VOCAL_PRESETS)
-            or any(not isinstance(p, str) or p not in VOCAL_PRESETS for p in caps["vocal_presets"])
-            or len(set(caps["vocal_presets"])) != len(caps["vocal_presets"])
-            or "dry" not in caps["vocal_presets"] or type(caps["sfx"]) is not bool):
-        raise ValueError("invalid_audio_capabilities")
-    voice = caps.get("voice_protection")
-    if "voice_protection" in caps and (
-            not isinstance(voice, dict) or (not {"state", "effective_gain"} <= set(voice) or set(voice)-{"state", "effective_gain", "mute_confirmed"})
-            or not isinstance(voice["state"], str)
-            or voice["state"] not in {"unavailable", "off", "preparing", "monitoring", "attenuated", "muted", "failed"}
-            or ("mute_confirmed" in voice and type(voice["mute_confirmed"]) is not bool)
-            or type(voice["effective_gain"]) is not int or not 0 <= voice["effective_gain"] <= 100):
-        raise ValueError("invalid_voice_protection")
-    preset, preset_state = value.get("vocal_preset", "dry"), value.get("vocal_preset_state", "unavailable")
-    seq, action, state = value.get("sfx_seq", 0), value.get("sfx_action", ""), value.get("sfx_state", "idle")
-    if (not isinstance(preset, str) or preset not in VOCAL_PRESETS
-            or not isinstance(preset_state, str) or preset_state not in {"unavailable", "pending", "requested", "applied", "failed"}
-            or type(seq) is not int or not 0 <= seq <= value["last_command"]
-            or not isinstance(action, str) or action not in SFX_ACTIONS | {""}
-            or not isinstance(state, str) or state not in {"idle", "pending", "playing", "stopped", "expired", "failed"}
-            or (seq == 0 and (action != "" or state != "idle"))
-            or (seq > 0 and (action not in SFX_ACTIONS or state == "idle"))
-            or (action == "sfx_stop" and state in {"pending", "playing"})):
-        raise ValueError("invalid_audio_playback")
-    return {"audio_capabilities": {"vocal_presets": list(caps["vocal_presets"]), "sfx": caps["sfx"],
-                                    **({"voice_protection": dict(voice)} if voice is not None else {})},
-            "vocal_preset": preset, "vocal_preset_state": preset_state,
-            "sfx_seq": seq, "sfx_action": action, "sfx_state": state}
-
-
-def song_title(value):
-    # Kept standalone for the stdlib-only NAS deployment.
-    title = value.strip()
-    if not re.search(r"\.(flac|mp3|m4a|wav|aac|ogg|ape|alac)$", title, re.I):
-        return title
-    title = re.sub(r"\.(flac|mp3|m4a|wav|aac|ogg|ape|alac)$", "", title, flags=re.I)
-    title = re.sub(r"^\d{1,3}[.、 _-]+", "", title)
-    if " - " in title:
-        artist, candidate = title.split(" - ", 1)
-        if artist and candidate:
-            title = candidate
-    return title.strip()
 
 
 class NoImageRedirect(urllib.request.HTTPRedirectHandler):

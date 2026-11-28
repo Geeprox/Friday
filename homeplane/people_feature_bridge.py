@@ -12,7 +12,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from .people.catalog import MAX_SAMPLES, PeopleCatalog, PeopleError
+from .people.catalog import MAX_SAMPLES, PeopleCatalog
+from .people.contracts import PeopleError
 from .people.clustering import FaceInput, digest, proposals
 from .people.contracts import Run, Sample
 from .recognition.contracts import VerificationPolicy

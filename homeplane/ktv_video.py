@@ -1,7 +1,7 @@
 """Optional, bounded MV acquisition and measured musical alignment. No playback or capture."""
 from __future__ import annotations
 
-import hashlib
+import math
 import json
 import re
 import shutil
@@ -12,18 +12,36 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from integrations.ktv_public.audio_format import MAX_DURATION_SECONDS
+
+from .ktv_audio import transcode_pcm
 from .ktv_download import canonical_song_id
+from .ktv_files import digest
+from .ktv_process import run_bounded
 
 MAX_VIDEO = 128 * 1024 * 1024
 SAMPLE_RATE = 8000
 
 
-def digest(path):
-    value = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            value.update(block)
-    return value.hexdigest()
+def valid_video(value, source_hash):
+    if not isinstance(value, dict):
+        return False
+    common = (value.get("status") == "ready"
+        and value.get("encoding") in {"h264_mp4_video_only", "h264_mp4_silent_clock"}
+        and value.get("source_audio_sha256") == source_hash
+        and isinstance(value.get("sha256"), str) and bool(re.fullmatch(r"[a-f0-9]{64}", value["sha256"]))
+        and type(value.get("bytes")) is int and 0 < value["bytes"] <= MAX_VIDEO
+        and type(value.get("duration_seconds")) in {int,float} and math.isfinite(value["duration_seconds"])
+        and 0 < value["duration_seconds"] <= MAX_DURATION_SECONDS
+        and type(value.get("video_offset_ms")) in {int,float} and math.isfinite(value["video_offset_ms"])
+        and -12000 <= value["video_offset_ms"] <= 12000)
+    if not common:
+        return False
+    if value.get("method") == "same_mv_audio":
+        return value["video_offset_ms"] == 0 and isinstance(value.get("derived_from_video_sha256"),str) and bool(re.fullmatch(r"[a-f0-9]{64}",value["derived_from_video_sha256"]))
+    return (all(type(value.get(k)) in {int,float} and math.isfinite(value[k]) for k in ("score_min","offset_drift_ms"))
+        and .94 <= value["score_min"] <= 1.01 and type(value.get("window_count")) is int
+        and 5 <= value["window_count"] <= 7 and 0 <= value["offset_drift_ms"] <= 25)
 
 
 def metadata(path, params):
@@ -84,7 +102,6 @@ def download(url, size, output, event):
 
 
 def command(args, event, *, timeout=45, output=None):
-    from .ktv_service import run_bounded
     if output is None:
         run_bounded(args, event, timeout=timeout)
         return
@@ -302,7 +319,6 @@ def acquire_mv_source(song_id, folder, event, *, mv_id=None):
 
 def prepare_same_mv(song_id, original, folder, event):
     """Bind the video to the exact MV audio used by the separator, with zero timeline offset."""
-    from .ktv_service import transcode_pcm
     record = json.loads((folder/'mv-source.json').read_text())
     source, output = folder/'.mv-source.mp4', folder/'video.mp4'
     if record.get('song_id')!=song_id or record.get('mv_sha256')!=digest(source):

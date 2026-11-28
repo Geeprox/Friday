@@ -40,7 +40,8 @@ def main():
         before[str(path.relative_to(ROOT))] = sha(path)
     before.update({str(Path(__file__).relative_to(ROOT)): sha(Path(__file__)),
                    "scripts/prepare_ktv_vendor_audio.py": sha(ROOT / "scripts/prepare_ktv_vendor_audio.py"),
-                   "scripts/ktv_build_workspace.py": sha(ROOT / "scripts/ktv_build_workspace.py")})
+                   "scripts/ktv_build_workspace.py": sha(ROOT / "scripts/ktv_build_workspace.py"),
+                   "scripts/workspace_references.py": sha(ROOT / "scripts/workspace_references.py")})
     ndk = args.ndk.resolve()
     if "27.3.13750724" not in (ndk / "source.properties").read_text():
         parser.error("existing_pinned_ndk_r27d_required")

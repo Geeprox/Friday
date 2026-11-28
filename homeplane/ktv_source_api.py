@@ -26,7 +26,7 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 import httpx
 
 from .ktv_download import _check, _directory, _hash_file, _run, _write, canonical_song_id
-from .ktv_metadata import song_title
+from integrations.ktv_public.audio_format import song_title
 
 VERSION = "4.41.1"
 MAX_BYTES = 128 * 1024 * 1024

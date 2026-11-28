@@ -13,6 +13,7 @@ from .contracts import (
     Edit,
     Merge,
     Name,
+    PeopleError,
     PeoplePage,
     Person,
     ReviewVoice,
@@ -23,12 +24,6 @@ from .contracts import (
 )
 
 MAX_SAMPLES, MAX_PEOPLE, MAX_LINKS, MAX_UNDO, MAX_BLOCKED = 512, 128, 256, 32, 4096
-
-
-class PeopleError(ValueError):
-    def __init__(self, code):
-        self.code = code
-        super().__init__(code)
 
 
 def serialized(method):

@@ -56,16 +56,15 @@ from .arl_rule_planning import (
 )
 from .contracts import ActionRequest, ActionTrace, Event, Snapshot
 from .core import HomeCore
-from .core_rules import (
+from .core_rule_contracts import (
     CoreRuleApproval,
     CoreRulePlan,
     CoreRuleProposal,
     CoreRuleRecord,
     CoreRuleRun,
-    CoreRuleRuntime,
-    CoreRules,
 )
-from .diagnostics import Diagnostics, DiagnosticsExportRequest, DiagnosticsPolicy
+from .core_rules import CoreRuleRuntime, CoreRules
+from .diagnostics import Diagnostics, DiagnosticsExportRequest, DiagnosticsPolicy, readiness
 from .discovery import HADiscovery
 from .family_media import FamilyMediaCatalog
 from .family_media.api import create_router as family_media_router
@@ -75,8 +74,8 @@ from .geek_background import GeekBackground
 from .geek_background import configured as geek_background_configured
 from .geek_background import enabled as geek_background_enabled
 from .geek_background import last_attempt as geek_background_last_attempt
-from .geek_inventory import GeekInventoryView
-from .geek_session import GeekSession, GeekSessionView
+from .geek_contracts import GeekInventoryView, GeekSessionView
+from .geek_session import GeekSession
 from .geek_setup import GeekSetup
 from .ha_setup import install_oauth
 from .home_flow import HomeFlow
@@ -582,8 +581,6 @@ def create_app(
 
     @app.get("/api/doctor")
     async def doctor():
-        from .cli import readiness
-
         return {
             **readiness(core.adapter, core.actions),
             "core_rules": core_rule_runtime.status(),

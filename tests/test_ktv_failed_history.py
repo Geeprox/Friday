@@ -11,7 +11,9 @@ from fastapi.testclient import TestClient
 
 from homeplane.ktv_accompaniment import MODEL_REVISION
 from homeplane.ktv_game_api import create_router
-from homeplane.ktv_service import Queue, atomic_json, create_app, nas_attempt_request_id
+from homeplane.ktv_files import atomic_json
+from homeplane.ktv_job_contracts import nas_attempt_request_id
+from homeplane.ktv_service import Queue, create_app
 
 TOKEN = "test_token_" + "h" * 32
 HEADERS = {"X-KTV-Key": TOKEN}

@@ -12,8 +12,7 @@ from pydantic import AwareDatetime, Field, model_validator
 from homeplane.contracts import Contract
 from homeplane.family_media.contracts import Digest, OpaqueRef
 
-from .contracts import StewardBudget, StewardJob
-from .service import StewardError
+from .contracts import StewardBudget, StewardError, StewardJob
 from .settings_contracts import StewardSettingsRequest
 
 

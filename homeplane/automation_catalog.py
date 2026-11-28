@@ -12,6 +12,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
+from .core_rule_contracts import CatalogOrigin, CatalogSelection
 from .geek_inventory import _read
 from .runtime_log import observe
 
@@ -80,18 +81,6 @@ class Import(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     expected_revision: int = Field(ge=0)
     bundle: Bundle
-
-
-class CatalogSelection(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    key: str = Field(min_length=1, max_length=160)
-    entry_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
-
-
-class CatalogOrigin(CatalogSelection):
-    source: Literal["geek", "mijia"]
-    kind: Literal["automation", "scene"]
-    name: str = Field(min_length=1, max_length=160)
 
 
 class AutomationCatalog:

@@ -20,7 +20,7 @@ from pydantic import AwareDatetime, Field, model_validator
 from .action_contracts import CoreRuleEffect, LightExecutionTrace
 from .archive_contracts import ArchiveResolveRequest
 from .contracts import Contract
-from .core_rules import CoreRuleRun
+from .core_rule_contracts import CoreRuleRun
 from .ha import HAReadOnlyAdapter
 from .query_contracts import HomeQuery, Identifier, ReadScope
 from .simulator import Simulator

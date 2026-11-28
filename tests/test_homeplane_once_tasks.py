@@ -4,8 +4,7 @@ from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 import pytest
 from pydantic import ValidationError
-from homeplane.rule_contracts import RuleIR, ScheduleTrigger
-from homeplane.rule_compiler import digest
+from homeplane.rule_contracts import RuleIR, ScheduleTrigger, digest
 from homeplane.task_composition import is_task_request
 
 def once_rule(at='2026-11-10T07:00', zone='Asia/Shanghai'):
@@ -123,7 +122,7 @@ async def test_confirmed_once_task_survives_console_disposal_and_never_replays(t
 async def test_a_one_off_time_that_passes_during_review_cannot_be_approved(tmp_path,monkeypatch):
     from homeplane import core_rules
     from tests.test_homeplane_core_rules import fixture,proposal,cleanup
-    from homeplane.core_rules import CoreRuleApproval
+    from homeplane.core_rule_contracts import CoreRuleApproval
     core,_,calls,_,_,_,owner,manager,runtime=await fixture(tmp_path)
     try:
         proposed=await proposal(core,manager);due=datetime.now(UTC)+timedelta(seconds=5)

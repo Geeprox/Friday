@@ -12,7 +12,8 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from homeplane.ktv_library import SongLibrary
-from homeplane.ktv_service import Queue, atomic_json, create_app
+from homeplane.ktv_files import atomic_json
+from homeplane.ktv_service import Queue, create_app
 
 
 def uid():

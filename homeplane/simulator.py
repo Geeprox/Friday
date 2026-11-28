@@ -8,7 +8,7 @@ from uuid import uuid4
 from .contracts import Entity, Event, ExternalRuleRecord, Observation, Snapshot
 from .quality import resolve
 from .simulated_measurements import SimulatedMeasurements
-from .event_provenance import entity_source_context
+from .event_provenance import SourceContextProvider, entity_binding, entity_source_context, source_digest, valid_label
 
 FIXTURE = Path(__file__).resolve().parent.parent / "fixtures/homeplane/house.json"
 SCENARIOS = {"calibration-training", "baseline", "stale-temperature", "all-sources-bad", "recovered", "transport-gap",
@@ -16,7 +16,7 @@ SCENARIOS = {"calibration-training", "baseline", "stale-temperature", "all-sourc
              "battery-stale", "wrong-ac-mode", "calibration-expired", "cache-recovery", "watch-window"}
 
 
-class Simulator:
+class Simulator(SourceContextProvider):
     def __init__(self, fixture: Path = FIXTURE, *, wall_now=None, monotonic=None):
         self.now = wall_now or (lambda: datetime.now(UTC))
         self.monotonic = monotonic or time.monotonic
@@ -54,6 +54,29 @@ class Simulator:
             payload={"scenario": name, "reason": "snapshot_is_not_an_arrival_event", "attribution": "simulated"},
         ))
         self.events = self.events[-200:]
+
+    def _entity_source_context(self, entity, binding):
+        fixture_identity = getattr(self, 'source_fixture_identity', None)
+        if (not entity.simulated or not valid_label(fixture_identity) or not valid_label(entity.kind)
+                or entity.room is not None and not valid_label(entity.room)):
+            return None
+        measurements = getattr(self, 'measurements', None)
+        candidates = [item for item in [*self.entities, *getattr(measurements, 'entities', [])]
+                      if item.id == entity.id]
+        if (len(candidates) != 1 or entity_binding(candidates[0]) != binding or not candidates[0].simulated
+                or candidates[0].kind != entity.kind or candidates[0].room != entity.room):
+            return None
+        return source_digest(['friday.event-source.v1', 'simulator', fixture_identity, binding,
+                        entity.kind, entity.room])
+
+    def _registered_room_context(self, room):
+        fixture = getattr(self, 'source_fixture_identity', None)
+        measurements = getattr(self, 'measurements', None)
+        if not valid_label(fixture) or not any(
+                item.simulated and item.room == room
+                for item in [*self.entities, *getattr(measurements, 'entities', [])]):
+            return None
+        return source_digest(['friday.registered-room.v1', 'simulator', fixture, room])
 
     async def snapshot(self) -> Snapshot:
         from .devices import project_simulated

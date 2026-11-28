@@ -12,7 +12,8 @@ import threading
 import time
 
 from .paths import PRIVATE, configuration
-from .ptz_control import read_lease, restore_camera
+from .camera_state import read_lease
+from .ptz_control import restore_camera
 
 
 def exit_with_owner(parent):

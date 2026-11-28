@@ -9,9 +9,8 @@ from homeplane.contracts import Contract
 from homeplane.family_media.catalog import digest
 from homeplane.family_media.contracts import OpaqueRef
 
-from .contracts import StewardBudget, StewardJob, StewardPageOutcome, StewardSourceAnchor, StewardUnit
+from .contracts import StewardBudget, StewardError, StewardJob, StewardPageOutcome, StewardSourceAnchor, StewardUnit
 from .providers import PROVIDERS, ExtractionStep
-from .service import StewardError
 
 
 class StewardNativeTextRequest(Contract):

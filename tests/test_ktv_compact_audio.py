@@ -16,7 +16,9 @@ from fastapi.testclient import TestClient
 
 from homeplane.ktv_archive import MediaArchive
 from homeplane.ktv_audio import pack_peak_safe_playback, pack_playback, source_bitrate
-from homeplane.ktv_service import JobRequest, Queue, create_app, transcode_pcm
+from homeplane.ktv_audio import transcode_pcm
+from homeplane.ktv_job_contracts import JobRequest
+from homeplane.ktv_service import Queue, create_app
 from integrations.ktv_public.audio_format import compact_spec, verify_compact
 from integrations.ktv_public.nas_server import Refusal, Store
 
@@ -360,7 +362,7 @@ def test_stock_migration_is_read_only_by_default_and_protects_active_songs(tmp_p
         raw_entry = {"file": raw_sha + ".audio", "sha256": raw_sha, "bytes": len(raw_source)}
         (legacy / "blobs" / raw_entry["file"]).write_bytes(raw_source)
         files["source"] = raw_entry
-        from homeplane.ktv_service import MODEL_REVISION
+        from homeplane.ktv_accompaniment import MODEL_REVISION
         catalog = {"song_id": "123", "files": files, "media": specs, "binding": MODEL_REVISION,
                    "retained": [files["original"]], "originals": [files["instrumental"]],
                    "source_metadata": {"bitrate": 128000}}

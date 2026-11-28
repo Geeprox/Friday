@@ -16,7 +16,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from .geek_background_contracts import BackgroundRequest, ConnectionIntent
+from .geek_contracts import BackgroundRequest, ConnectionIntent
 from .geek_session import GeekSession
 from .geek_setup import GeekSetup
 from .settings import SettingsConfig
@@ -288,7 +288,7 @@ class GeekDaemon:
                 result = (await self.session.inventory()).model_dump(mode="json")
                 status = self.status()
                 if result["status"] == "ready" and (status["status"] != "online" or status.get("fingerprint") != result.get("fingerprint")):
-                    from .geek_inventory import GeekInventoryView
+                    from .geek_contracts import GeekInventoryView
                     result = GeekInventoryView(session=status, status="stale").model_dump(mode="json")
                 else:
                     result["session"] = status

@@ -18,6 +18,14 @@ uv sync --locked --python 3.12 --group dev --extra airplay --extra nas-connectio
 
 完整测试套件运行前，使用 `npm --prefix workers/geek ci --ignore-scripts` 安装可选 Geek 工作进程的测试依赖；完整回归的依赖参数以 [CI 工作流](../.github/workflows/ci.yml)为准。基础控制台安装仍支持 Python 3.11 及以上版本。
 
+Python 依赖边界由 `uv run --no-sync python scripts/check_architecture.py` 检查。CI 拒绝新增循环边
+和已经失效的历史例外。查看完整的静态导入图可追加 `--graph`。原生、部署和动态调用的边界由
+[架构治理](architecture-governance.md)记录。
+
+控制台、家庭资料和文件管家的 Schema 导出共用 `homeplane/schema_export.py`。
+用 `tests/test_schema_exports.py` 复现现有三个入口并检查已跟踪结果。历史差异由该测试列出；
+同步时核对公开文件的消费方和兼容版本，然后撤掉已解除的记录。
+
 完整回归包含 KTV 的真实 PNG 二维码生成，因此须选择已锁定的 `ktv` extra；
 `qrcode` 本身不包含 `PyPNGImage` 所需的 PyPNG。无需为运行测试启动 KTV、登录、扬声器或电视。
 
@@ -35,6 +43,10 @@ uv sync --locked --python 3.12 --group dev --extra airplay --extra nas-connectio
 常规 Python 导入也必须设置 `PYTHONDONTWRITEBYTECODE=1`，避免在固定输入中生成
 `__pycache__`；额外文件仍会使来源核验和清理拒绝，不能用忽略缓存的方式放宽清单。
 
+Laya 的推理和有界日志归 `shared_laya_engine.py`，ARL 宿主启动、进程身份和关闭顺序
+归 `shared_laya_service.py`。按安装器的无 `--apply` 清单重建最小源码目录，测试隔离加载。
+有 `arl.service` 时执行宿主 RPC 身份回归，其余 Laya 测试直接使用合成引擎输入。
+
 CI 通过 `scripts/run_ci_regression.py` 为每个回归进程创建独占的 `/tmp/fci-*`，同时将它设为
 `TMPDIR`，并把 pytest `--basetemp` 放在其 `p/` 子目录。这样 SQLite 仍遵守原本的
 本机临时位置校验，Unix socket 也保留短路径余量；回归期间持有锁，结束后核对来源、
@@ -44,6 +56,13 @@ Git、类型和打开句柄再回收，保留外部小型 JSON 回执。引用�
 本机开发仍遵守项目缓存命名空间；设置 `TMPDIR` 时须指向本任务已创建的隔离目录，
 需要短 socket 的测试才使用有来源记录、可回收的 `/tmp` 例外。
 该例外使用两平台都有的 `/tmp`；macOS 将其解析到 `/private/tmp`，不把该 macOS 路径写死在 Linux 测试中。
+回归目录、固定 SDK 和 KTV 构建目录使用同一打开引用检查。在 macOS 上读取进程提供的
+设备号和 inode，避免对其他挂载点执行 stat；在 Linux 上按目标目录扫描。已知的挂载表
+回退诊断不会阻断 macOS 本地检查，未知诊断、扫描失败和打开引用都会保留现场。
+
+Python 回归用 `sys.executable` 启动隔离子进程。Geek 安装测试只在合成目录准备测试用
+`.venv/bin/python` 文件，覆盖正式安装的路径判断。KTV 测试用实际解释器启动合成 worker，
+收到就绪证据后才触发取消并核对进程已回收。
 
 打包门禁测试的稀疏合成 App 和校验回执放在正式认可的项目缓存中，以独占锁、清单及
 清理回读管理；测试数据的位置不能绕过正式 App 根目录、SDK 来源或副作用检查。

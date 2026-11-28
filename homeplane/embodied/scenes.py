@@ -9,7 +9,7 @@ import re
 import sys
 
 from .paths import PRIVATE
-from .ptz_control import atomic,read_lease
+from .camera_state import atomic, read_lease
 
 logging.getLogger('miot').setLevel(logging.CRITICAL)
 digest=lambda value:hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()

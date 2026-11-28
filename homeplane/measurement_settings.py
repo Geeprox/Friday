@@ -4,8 +4,6 @@ Only Celsius temperature profiles are editable in this first vertical path.
 Samples and recovery history stay in bounded RAM; persisted metadata cannot turn
 HA cache writes into hardware samples or prove independent source identity.
 """
-import hashlib
-import json
 import sqlite3
 import time
 from datetime import timedelta
@@ -19,24 +17,13 @@ from .measurement_settings_contracts import (
     MeasurementSettingsView,
     MeasurementSource,
     SavedMeasurement,
+    binding_fingerprint,
+    contextual_device,
+    digest,
+    source_key,
 )
 from .sensor_quality import SensorQualityEngine
 from .simulator import Simulator
-
-
-def digest(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-
-
-def source_key(entity):
-    return digest([entity.id, entity.physical_source_id, "temperature"])
-
-
-def binding_fingerprint(entity):
-    return digest([entity.id, entity.physical_source_id, entity.room, entity.simulated,
-                   sorted((b.source, b.external_id) for b in entity.bindings),
-                   sorted((c.name, c.access, c.unit, c.support) for c in entity.capabilities
-                          if c.name == "temperature")])
 
 
 class MeasurementSettings:
@@ -149,7 +136,6 @@ class MeasurementSettings:
         if operation == "edit":
             base = MeasurementProfile.model_validate({**base.model_dump(), **request.fields.model_dump(exclude={"schema_version", "expected_context", "representativeness"}),
                 "context":request.fields.expected_context, "version":"local-"+str(uuid4())})
-            from .measurement_enrollment import contextual_device
             role = "contextual_air" if contextual_device(entity, snapshot) else request.fields.representativeness
             edited = True
         elif operation == "exclude":

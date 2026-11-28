@@ -16,30 +16,13 @@ from .measurement_settings_contracts import (
     SavedCalibration,
     SavedMeasurement,
     SavedMeasurementGroup,
+    binding_fingerprint,
+    contextual_device,
+    digest,
+    identity_material,
+    source_key,
 )
 from .simulator import Simulator
-
-
-def identity_material(entity, snapshot):
-    if snapshot.mode == "simulator" and entity.simulated:
-        return ["simulated", entity.physical_source_id]
-    devices = [
-        d
-        for d in snapshot.devices
-        if entity.id in d.function_ids and not d.simulated and d.identity_basis == "xiaomi_identifier"
-    ]
-    if len(devices) != 1:
-        return None
-    identifiers = sorted(b.external_id for b in devices[0].bindings if b.source == "xiaomi-identity")
-    return ["upstream_xiaomi_identifiers", identifiers] if len(identifiers) == 1 else None
-
-
-def contextual_device(entity, snapshot):
-    return (
-        entity.kind == "climate"
-        or any(c.name == "climate.set" for c in entity.capabilities)
-        or any(entity.id in d.function_ids and d.kind == "climate" for d in snapshot.devices)
-    )
 
 
 class MeasurementEnrollment:
@@ -49,8 +32,6 @@ class MeasurementEnrollment:
         self.approval_carry = None
 
     def identity(self, entity, snapshot):
-        from .measurement_settings import digest
-
         value = identity_material(entity, snapshot)
         return digest(value) if value else None
 
@@ -71,15 +52,11 @@ class MeasurementEnrollment:
         return realm, config
 
     def group_fingerprint(self, saved, profiles):
-        from .measurement_settings import digest
-
         return digest(
             [saved.model_dump(mode="json"), [(s, profiles[s].fingerprint()) for s in saved.group.sources]]
         )
 
     def group_valid(self, adapter, snapshot, saved, profiles, config):
-        from .measurement_settings import binding_fingerprint, source_key
-
         candidates, _ = self.owner._inventory(snapshot)
         entities = {source_key(e): e for e in candidates}
         records = {r.source_key: r for r in config.sources}
@@ -104,8 +81,6 @@ class MeasurementEnrollment:
         )
 
     def edit_group(self, adapter, snapshot, request):
-        from .measurement_settings import binding_fingerprint, digest, source_key
-
         realm, config = self._check(adapter, snapshot, request)
         candidates, _ = self.owner._inventory(snapshot)
         inventory = {source_key(e): e for e in candidates}
@@ -201,8 +176,6 @@ class MeasurementEnrollment:
         }
 
     def _learn(self, adapter, snapshot, request, config, *, version):
-        from .measurement_settings import source_key
-
         saved = next((g for g in config.groups if g.group.entity == request.group_entity), None)
         engine = self.owner.engine
         if saved is None or engine is None or saved.group.entity not in engine.groups:
@@ -238,8 +211,6 @@ class MeasurementEnrollment:
         return saved, learned, refs
 
     def preview(self, adapter, snapshot, request):
-        from .measurement_settings import digest
-
         realm, config = self._check(adapter, snapshot, request)
         self._prune(snapshot.generated_at)
         if len(self.candidates) >= 16:
@@ -274,8 +245,6 @@ class MeasurementEnrollment:
         return preview
 
     def approve(self, adapter, snapshot, request):
-        from .measurement_settings import digest
-
         realm, config = self._check(adapter, snapshot, request)
         self._prune(snapshot.generated_at)
         candidate = self.candidates.get(request.candidate_id)
@@ -320,8 +289,6 @@ class MeasurementEnrollment:
         self.candidates.clear()
 
     def views(self, adapter, snapshot, config, profiles):
-        from .measurement_settings import source_key
-
         candidates, _ = self.owner._inventory(snapshot)
         keys = {e.physical_source_id: source_key(e) for e in candidates}
         fixture = self.owner._fixture(adapter)

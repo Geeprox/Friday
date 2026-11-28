@@ -6,10 +6,8 @@ import os
 import stat
 from pathlib import Path
 
-from .geek_background_contracts import BackgroundInstallation, BackgroundRequest
+from .geek_contracts import BackgroundInstallation, BackgroundRequest, GeekInventoryView, GeekSessionView
 from .geek_daemon import MAX_RESPONSE, SOCKET_NAME, private_file
-from .geek_inventory import GeekInventoryView
-from .geek_session import GeekSessionView
 from .geek_setup import GeekSetup
 
 MARKER_NAME = "geek-background-installed.json"

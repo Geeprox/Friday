@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip('arl', reason='Optional shared ARL SDK')
 from arl.contracts import Fault
-from homeplane import shared_laya_service as shared
+from homeplane import shared_laya_engine as shared
 from homeplane.runtime_log import RuntimeLog
 
 QUESTIONS = {'command': {'type': 'choice', 'instructions': 'Choose',

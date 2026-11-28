@@ -10,7 +10,7 @@ import time
 from urllib.parse import parse_qs, urlsplit
 
 from .paths import PRIVATE, configuration
-from .ptz_control import atomic, read_lease
+from .camera_state import atomic, read_lease
 
 logging.getLogger('miot').setLevel(logging.CRITICAL)
 AUTH_ERRORS={-10005,-10020,-10021,-10030}

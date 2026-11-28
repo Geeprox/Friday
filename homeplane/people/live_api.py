@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from .catalog import PeopleError
+from .contracts import PeopleError
 from .live import POLICY, IdentityStore
 
 

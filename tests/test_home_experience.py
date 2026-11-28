@@ -134,7 +134,7 @@ def test_binding_scope_rejects_unknown_targets_and_requires_point_calibration(tm
 
 
 def test_product_selects_physical_channels_instead_of_configuration_switches():
-    from homeplane.home_experience import household_function
+    from homeplane.home_presentation import household_function
     def e(kind,name):return SimpleNamespace(kind=kind,name=name)
     lamp=e('light','餐吊灯 灯光')
     for name in ('餐吊灯 灯光 凌动开关','餐吊灯 * 通用开关设置 上电默认开灯状态',

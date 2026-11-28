@@ -7,9 +7,30 @@ from typing import Literal
 from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from homeplane.contracts import Contract
+from homeplane.family_media.catalog import digest
 from homeplane.family_media.contracts import Digest, FamilyMediaOriginalRef, OpaqueRef
 
 from .policy import StewardPolicyResolution
+
+
+MAX_UNITS = 4096
+
+
+class StewardError(ValueError):
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
+
+
+def fingerprint(item):
+    return digest(
+        [
+            item.item_id,
+            item.original_hash,
+            item.size_bytes,
+            item.original_ref.model_dump(mode="json") if item.original_ref else None,
+        ]
+    )
 
 
 def relative_path(value: str) -> str:

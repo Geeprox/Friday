@@ -1,0 +1,8 @@
+{
+  "homeplane.recognition_contracts": [
+    "homeplane.recognition_feature_handoff"
+  ],
+  "homeplane.recognition_feature_handoff": [
+    "homeplane.recognition_contracts"
+  ]
+}

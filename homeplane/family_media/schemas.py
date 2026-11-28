@@ -1,23 +1,19 @@
 """Generate only the owned FamilyMedia*.json schemas."""
 
 import argparse
-import json
-from pathlib import Path
 
 from homeplane.contracts import Contract
+from homeplane.schema_export import write_schemas
 
 from . import contracts, photo_requests
 
 
 def generate(destination):
-    destination = Path(destination)
-    destination.mkdir(parents=True, exist_ok=True)
     values = {**vars(contracts), **vars(photo_requests)}
-    for name, value in values.items():
-        if name.startswith("FamilyMedia") and isinstance(value, type) and issubclass(value, Contract):
-            (destination / (name + ".json")).write_text(
-                json.dumps(value.model_json_schema(), indent=2) + "\n"
-            )
+    write_schemas(destination, {
+        name: value for name, value in values.items()
+        if name.startswith("FamilyMedia") and isinstance(value, type) and issubclass(value, Contract)
+    })
 
 
 if __name__ == "__main__":

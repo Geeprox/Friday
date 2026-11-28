@@ -2,6 +2,8 @@
 
 Linux x86_64 CPU 适配的独立环境、ARL 入口、验证范围和平台边界见[Linux CPU 运行时](linux-runtime.md)。
 
+模块入口、状态所有权、依赖图和治理记录见[架构治理](architecture-governance.md)。
+
 `homeplane/` is the current control plane; `friday/` retains the optional legacy
 camera-oriented API. The default homeplane adapter is the explicit Simulator.
 HA ingress reads states and area/device/entity registries. Action planning and
@@ -19,7 +21,23 @@ are derived from the current user; it does not embed an author's repository path
 login session or signing identity. NAS and People content stay local. Optional
 ARL provides the model-runtime boundary and is not a prerequisite for simulation.
 
+HA REST 与 WebSocket 共用 `ha_protocol.py` 的有界消息解析与状态校验。
+HA 和 Simulator 各自核对登记、房间和当前身份材料，再用 `event_provenance.py`
+生成稳定来源摘要。历史事件查验继续比较原摘要、来源和当前权限。
+
+CLI 与 HTTP 的 doctor 报告由 `diagnostics.py` 生成，使用实际跟踪存储的默认保留值。
+Geek 会话、清单与后台服务共用 `geek_contracts.py`，数据模型无需加载 Worker 生命周期。
+ARL 应用与客户端的错误类型和终态集合共用 `arl_sdk_contract.py`。
+
+测量设置和校准共用 `measurement_settings_contracts.py` 的来源指纹与身份材料。
+家庭控制台与互动意图从 `home_presentation.py` 获取物理设备功能的筛选规则。
+人物记录与识别桥接统一使用人物契约定义的错误类型。
+
 ## 重建其他平台的自动化
+
+规则指纹在 `rule_contracts.py` 生成，编译、日历与执行回执使用同一编码。
+审核计划、外部来源引用和本地执行回执由 `core_rule_contracts.py` 定义。
+调度和提醒通过该契约读写回执。原 JSON Schema 和既有持久指纹继续有效。
 
 自动化目录在读取时为每条盘点记录生成摘要。重建页将原记录与当前家庭设备选择放在一起。新规则使用当前注册设备和能力标识，数值条件使用读数能力绑定的单位。
 `CoreRules` 在创建计划、试算和保存时重新核对所选记录。其他目录项变化时仍可继续；所选记录变动时要求重新打开。
@@ -145,6 +163,10 @@ flowchart LR
 ```
 
 ## 本机识别恢复
+
+采集环境由 `embodied/capture_environment.py` 装配，摄像头配置路径独立于 UDP 中继。
+隐私、云台、MIoT 会话与场景复用 `camera_state.py` 的原子提交和状态读取。
+场景模型由对应进程持有，取消后的待完成任务交由 `local_child.py` 保持引用。
 
 主、副镜头各自管理原生识别子进程。识别管道出错时，撤销旧的识别画面、人物轨迹、未完成的监测候选与自动动作准入，保留仍有效的采集连接。已确认原子进程退出且退避结束后，用下一张新画面启动识别。体感游戏保留本局已取得的进度，依照原有恢复流程重新确认玩家。
 

@@ -2,37 +2,12 @@ import argparse
 import asyncio
 import json
 import os
-import platform
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
 from .contracts import ActionRequest, ActionTrace, Snapshot
 from .simulator import Simulator
-
-
-def readiness(adapter=None, actions=None):
-    import importlib.metadata
-    targets = actions.targets(adapter._last) if actions and getattr(adapter, "_last", None) else []
-    return {
-        "schema_version": 1, "mode": "simulator" if adapter is None or isinstance(adapter, Simulator) else "ha-read-only",
-        "real_writes": "scoped_explicit_execution_only" if targets else "disabled",
-        "authorized_target_count": len(targets), "python": platform.python_version(), "platform": platform.system(),
-        "dependencies": {n: importlib.metadata.version(n) for n in ("fastapi", "pydantic", "httpx", "websockets")},
-        "retention": {"traces_days": 7, "max_rows": 1000, "sensitivity": "household", "media_capture": "disabled"},
-        "capabilities": {
-            "simulator": "available", "ha": "settings_oauth_readonly_activation",
-            "geek": "requires_local_pairing_passcode", "camera": "account_stream_and_license_probe_required",
-            "nas": "bounded_readonly_index_interval_and_original_mp4_player_simulated_real_timing_and_codec_pending", "room_output": "audibility_and_offline_test_pending",
-            "laya": "arl_task_contract_pending", "codex": "arl_provider_required", "arl": "shared_sdk",
-            "rules": "owned_simulator_and_reviewed_local_core_backend_native_deployment_unqualified",
-            "measurement_settings": "source_bound_temperature_profiles_and_temporary_exclusion",
-            "measurement_calibration_enrollment": "reviewed_relative_only_qualified_paired_samples_no_physical_independence_claim",
-        },
-        "offline_hardware": "unknown", "physical_verification": "NOT_RUN",
-        "limitations": ["No hardware test follows from readiness.", "External rules are not fully visible or intercepted."],
-        "ha_ingress": adapter.health() if adapter is not None and not isinstance(adapter, Simulator) else None,
-    }
 
 
 def adapter_from_env(args):
@@ -126,6 +101,7 @@ def main():
         return
     if args.command == "doctor":
         from .arl import DEFAULT_HOME, ARLRuntime
+        from .diagnostics import readiness
         from .settings import SettingsService
         settings = SettingsService()
         runtime = ARLRuntime(lambda: Path(settings.config.arl_home) if settings.config.arl_home else DEFAULT_HOME)
@@ -156,11 +132,9 @@ def main():
             RuleAnalysisReview,
         )
         from .contracts import PhysicalDevice
-        from .core_rules import CoreRuleApproval, CoreRulePlan, CoreRuleProposal, CoreRuleRecord, CoreRuleRun
+        from .core_rule_contracts import CoreRuleApproval, CoreRulePlan, CoreRuleProposal, CoreRuleRecord, CoreRuleRun
         from .diagnostics import DiagnosticsExportRequest, DiagnosticsPolicy, DiagnosticsReport
-        from .geek_background_contracts import BackgroundRequest, ConnectionIntent
-        from .geek_inventory import GeekInventoryView
-        from .geek_session import GeekSessionView
+        from .geek_contracts import BackgroundRequest, ConnectionIntent, GeekInventoryView, GeekSessionView
         from .measurement_settings_contracts import (
             ApproveRelativeCalibration,
             CalibrationPreview,
@@ -183,24 +157,29 @@ def main():
         )
         from .rule_runtime import RuleRun
         from .rule_text import RuleTextContext, RuleTextRequest, RuleTextResult
-        out = Path("schemas")
-        out.mkdir(exist_ok=True)
-        for name, model in [("GeekBackgroundRequest", BackgroundRequest), ("GeekConnectionIntent", ConnectionIntent),
-                            ("GeekSessionStatus", GeekSessionView), ("GeekInventory", GeekInventoryView)]:
-            (out / f"{name}.json").write_text(json.dumps(model.model_json_schema(), indent=2) + "\n")
-        for model in (MediaProbeRequest, MediaProbeResult, DiagnosticsExportRequest, DiagnosticsPolicy, DiagnosticsReport,
-                      Snapshot, ActionRequest, ActionTrace, PhysicalDevice, LightPlanRequest, LightExecutionTrace, LightAuthority,
-                      ArchiveCameraEdit, ArchiveResolution, ArchiveResolveRequest, ArchiveSegmentRef, ArchiveTimeRange,
-                      ArchivePlaybackCancel, ArchivePlaybackPlan, ArchivePlaybackRequest,
-                      DevicePlanRequest, HomeDeviceAuthority,
-                      RuleIR, RuleCompilation, RuleEvaluation, ModeLease, RuleTrial, ManagedRuleRecord,
-                      RemoveRuleAction, RuleApproval, RuleDeployment, RulePlanRef, RuleRun, HomeQuery, HomeQueryResult,
-                      EditMeasurement, ExcludeMeasurement, MeasurementChange, MeasurementSettingsView,
-                      EditMeasurementGroup, PreviewRelativeCalibration, CalibrationPreview, ApproveRelativeCalibration,
-                      RuleTextContext, RuleTextRequest, RuleTextResult,
-                      RuleAnalysisApproval, RuleAnalysisContext, RuleAnalysisRequest, RuleAnalysisResult, RuleAnalysisReview,
-                      CoreRuleApproval, CoreRulePlan, CoreRuleProposal, CoreRuleRecord, CoreRuleRun):
-            (out / f"{model.__name__}.json").write_text(json.dumps(model.model_json_schema(), indent=2) + "\n")
+        from .schema_export import write_schemas
+
+        aliases = {
+            "GeekBackgroundRequest": BackgroundRequest,
+            "GeekConnectionIntent": ConnectionIntent,
+            "GeekSessionStatus": GeekSessionView,
+            "GeekInventory": GeekInventoryView,
+        }
+        models = (
+            MediaProbeRequest, MediaProbeResult, DiagnosticsExportRequest, DiagnosticsPolicy, DiagnosticsReport,
+            Snapshot, ActionRequest, ActionTrace, PhysicalDevice, LightPlanRequest, LightExecutionTrace, LightAuthority,
+            ArchiveCameraEdit, ArchiveResolution, ArchiveResolveRequest, ArchiveSegmentRef, ArchiveTimeRange,
+            ArchivePlaybackCancel, ArchivePlaybackPlan, ArchivePlaybackRequest,
+            DevicePlanRequest, HomeDeviceAuthority,
+            RuleIR, RuleCompilation, RuleEvaluation, ModeLease, RuleTrial, ManagedRuleRecord,
+            RemoveRuleAction, RuleApproval, RuleDeployment, RulePlanRef, RuleRun, HomeQuery, HomeQueryResult,
+            EditMeasurement, ExcludeMeasurement, MeasurementChange, MeasurementSettingsView,
+            EditMeasurementGroup, PreviewRelativeCalibration, CalibrationPreview, ApproveRelativeCalibration,
+            RuleTextContext, RuleTextRequest, RuleTextResult,
+            RuleAnalysisApproval, RuleAnalysisContext, RuleAnalysisRequest, RuleAnalysisResult, RuleAnalysisReview,
+            CoreRuleApproval, CoreRulePlan, CoreRuleProposal, CoreRuleRecord, CoreRuleRun,
+        )
+        write_schemas("schemas", {**aliases, **{model.__name__: model for model in models}})
     else:
         async def run():
             try:

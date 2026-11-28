@@ -1,6 +1,5 @@
 """真实 CI 子进程的临时数据库、不可变输入环境与结束清理。"""
 
-import importlib.util
 import json
 import os
 import subprocess
@@ -9,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
+from scripts import run_ci_regression as runner
+from scripts import workspace_references
+
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("ci_regression", ROOT / "scripts/run_ci_regression.py")
-runner = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(runner)
 
 
 def test_workspace_runs_original_store_without_changing_location_policy(tmp_path):
@@ -81,7 +80,8 @@ def test_synthetic_failure(pytestconfig):
         env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1", FRIDAY_TEST_CACHE_OBSERVATION=str(observed)),
         capture_output=True,
         text=True,
-        timeout=30,
+        # 子进程完成后还需要核对 Git 和系统打开引用。
+        timeout=55,
     )
     assert result.returncode == 1, result.stderr
     saved = json.loads(receipt.read_text())
@@ -106,3 +106,46 @@ def test_cleanup_refuses_open_reference_and_preserves_receipt(tmp_path):
             stream.close()
     runner.clean_owned(root)
     assert not root.exists()
+
+
+@pytest.mark.parametrize("reference", ["directory", "hard_link"])
+def test_cleanup_tracks_references_outside_the_calling_process(tmp_path, reference):
+    root = tmp_path / "owned"
+    root.mkdir()
+    target = root / "target"
+    target.touch()
+    alias = tmp_path / "alias"
+    os.link(target, alias)
+    code = """import os, sys
+if sys.argv[1] == 'directory':
+    os.chdir(sys.argv[2])
+else:
+    handle = open(sys.argv[3])
+print('ready', flush=True)
+sys.stdin.read()
+"""
+    with subprocess.Popen(
+        [sys.executable, "-B", "-c", code, reference, str(root), str(alias)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    ) as child:
+        try:
+            assert child.stdout.readline() == "ready\n"
+            assert workspace_references.workspace_in_use(root)
+        finally:
+            child.stdin.close()
+            child.wait(timeout=10)
+    assert not workspace_references.workspace_in_use(root)
+
+
+def test_cleanup_preserves_workspace_when_reference_scan_is_incomplete(tmp_path, monkeypatch):
+    def incomplete(*_args, **_kwargs):
+        return subprocess.CompletedProcess([], 0, stdout=b"p1\0\n", stderr=b"lsof: unexpected warning\n")
+
+    monkeypatch.setattr(workspace_references, "_scan", incomplete)
+    receipt = tmp_path / "incomplete.json"
+    with pytest.raises(OSError, match="workspace_reference_scan_incomplete"):
+        with runner.workspace(receipt, parent=tmp_path) as (root, _, _):
+            pass
+    assert root.exists() and json.loads(receipt.read_text())["status"] == "cleanup_refused"

@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from .rule_contracts import digest
+
 
 @dataclass(frozen=True)
 class ClockOccurrence:
@@ -66,8 +68,6 @@ def require_future_once(trigger, now):
 
 
 def clock_payload(trigger, occurrence):
-    from .rule_compiler import digest
-
     return dict(schedule=digest(trigger), local_date=occurrence.day, scheduled_at=occurrence.at.isoformat())
 
 

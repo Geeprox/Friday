@@ -10,10 +10,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .geek_background import MARKER_NAME, GeekBackground
-from .geek_background_contracts import BackgroundInstallation
+from .geek_contracts import BackgroundAttempt, BackgroundInstallation
 from .geek_daemon import atomic_private, private_file
 from .geek_native import BUNDLE, BUNDLE_ID, build_helper
-from .geek_session import BackgroundAttempt
 from .geek_setup import ROOT
 from .settings import run_bounded
 

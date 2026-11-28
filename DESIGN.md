@@ -173,6 +173,9 @@ Games 是同一身份中的 Experience：已有纸艺、黏土插画构成封面
 
 ## Colors
 
+控制台和体感页分别以 `homeplane/static/style.css` 与 `homeplane/embodied/static/games.css`
+的运行时颜色为准。本文件头部的浅色示例由回归测试与实际 CSS 核对。
+
 配色沿用实际实现：日常界面接近中性的纸白、浅灰与石墨，游戏舞台的纸面稍暖，插画自身保留已批准的场景色彩。
 
 ### Primary

@@ -12,8 +12,7 @@ import unicodedata
 from homeplane.family_media.catalog import digest
 from homeplane.family_media.contracts import FamilyMediaPage
 
-from .contracts import StewardUnit
-from .service import MAX_UNITS, StewardError
+from .contracts import MAX_UNITS, StewardError, StewardUnit
 
 
 def normalized(text):

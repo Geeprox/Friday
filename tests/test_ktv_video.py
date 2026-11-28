@@ -4,7 +4,7 @@ import threading
 import numpy as np
 import pytest
 
-from homeplane.ktv_service import valid_video
+from homeplane.ktv_video import valid_video
 from homeplane.ktv_video import align_samples, cdn_url, download
 
 
@@ -98,7 +98,8 @@ def test_same_mv_audio_proof_does_not_require_album_duration_or_waveform_offset(
 def test_mv_audio_extraction_uses_movie_timeline_with_intro_and_padding(tmp_path):
     import shutil,subprocess,wave
     from homeplane.ktv_video import extract_mv_audio,prepare_same_mv
-    from homeplane.ktv_service import transcode_pcm,digest
+    from homeplane.ktv_audio import transcode_pcm
+    from homeplane.ktv_files import digest
     ffmpeg,ffprobe=shutil.which('ffmpeg'),shutil.which('ffprobe')
     if not ffmpeg or not ffprobe:pytest.skip('local media tools unavailable')
     movie=tmp_path/'.mv-source.mp4';audio=tmp_path/'.mv-audio.wav'

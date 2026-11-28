@@ -14,9 +14,8 @@ from homeplane.family_media.catalog import FamilyMediaError, digest
 from homeplane.family_media.contracts import Digest, FamilyMediaResolveRequest
 from homeplane.family_media.reader import RANGE_BYTES
 
-from .contracts import StewardJobRequest, StewardSourceAnchor, StewardUnit
+from .contracts import StewardError, StewardJobRequest, StewardSourceAnchor, StewardUnit, fingerprint
 from .providers import ExtractionStep, ProviderSpec
-from .service import StewardError, fingerprint
 from .settings_contracts import StewardSettingsRequest
 
 MAX_TEXT_BYTES = 131072

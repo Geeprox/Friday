@@ -23,7 +23,8 @@ from pathlib import Path
 import httpx
 from fastapi import HTTPException
 
-from .ktv_service import ACTIVE, atomic_json
+from .ktv_files import atomic_json
+from .ktv_job_contracts import ACTIVE
 
 ID = re.compile(r"[1-9][0-9]{0,17}\Z")
 SHA = re.compile(r"[a-f0-9]{64}\Z")

@@ -75,6 +75,7 @@ KTV 播放保留。云端语音输入与逐曲背景各自单独开启，见[智
 ```sh
 uv sync --locked --python 3.12 --group dev
 .venv/bin/python -m pytest -q --basetemp=/tmp/friday-tests
+.venv/bin/python scripts/check_architecture.py
 node --test tests/audio.test.mjs
 .venv/bin/ruff check --select E9,F63,F7,F82 homeplane friday scripts tests
 python3 scripts/audit_publication.py

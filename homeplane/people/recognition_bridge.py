@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from homeplane.recognition.contracts import Embedding
 
-from .catalog import PeopleError
+from .contracts import PeopleError
 from .clustering import FaceInput
 
 

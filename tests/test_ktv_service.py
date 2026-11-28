@@ -11,7 +11,10 @@ import wave
 import pytest
 from fastapi.testclient import TestClient
 
-from homeplane.ktv_service import JobRequest, Queue, create_app, local_host, transcode_pcm
+from homeplane.ktv_audio import transcode_pcm
+from homeplane.ktv_job_contracts import JobRequest
+from homeplane.ktv_service import Queue, create_app
+from homeplane.ktv_startup import local_host
 
 KEY = "s" * 43
 HEADERS = {"X-KTV-Key": KEY}

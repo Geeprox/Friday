@@ -19,8 +19,8 @@ from test_homeplane_recognition_consumer import launch, owner, settings, zero_rs
 
 from homeplane.api import create_app
 from homeplane.media_probe import RecognitionProbe, stop_process
-from homeplane.people.catalog import PeopleCatalog, PeopleError
-from homeplane.people.contracts import Correct, Name, Split
+from homeplane.people.catalog import PeopleCatalog
+from homeplane.people.contracts import Correct, Name, PeopleError, Split
 from homeplane.people_feature_bridge import SyntheticPeopleBatchOwner, qualify_people_catalog
 from homeplane.recognition_consumer import _OWNED_RECOGNITION_CALLS, RecognitionConsumer
 from homeplane.recognition_contracts import RecognitionStatus, observation_id

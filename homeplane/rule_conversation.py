@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 from typing import Callable
 from uuid import uuid4
 
+from .core_rule_contracts import CoreRuleApproval, CoreRulePlan
+from .core_rules import CoreRules
 from .home_flow_contracts import (
     MAX_ACTIVE_OPERATIONS,
     MAX_HISTORY_BYTES,
@@ -25,8 +27,7 @@ from .home_flow_contracts import (
     TrustedFlowContext,
 )
 from .home_flow_ports import RulePorts
-from .core_rules import CoreRuleApproval, CoreRulePlan, CoreRules
-from .rule_compiler import digest
+from .rule_contracts import digest
 from .rule_deployment import RuleApproval, RuleDeployment
 from .rule_text import RuleTextChoice, RuleTextRequest, RuleTextResult
 

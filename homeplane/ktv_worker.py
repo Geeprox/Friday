@@ -29,8 +29,8 @@ import httpx
 from fastapi import HTTPException
 
 from .intelligence.ktv_lyrics import LOOKUP_REVISION
+from .ktv_files import atomic_json, private_directory
 from .ktv_nas_bridge import NasBridge
-from .ktv_service import atomic_json, private_directory
 
 UUID = re.compile(r"[a-f0-9-]{36}")
 TICKET = re.compile(r"([0-9]{10})\.([A-Za-z0-9_-]{43})")

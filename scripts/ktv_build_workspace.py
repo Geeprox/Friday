@@ -10,10 +10,14 @@ import re
 import secrets
 import shutil
 import stat
-import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
+
+if __package__:
+    from .workspace_references import workspace_in_use
+else:
+    from workspace_references import workspace_in_use
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -57,19 +61,10 @@ def build_workspace(toolchain: str, purpose: str, *, configuration: str = "relea
             raise
         finally:
             record["ended_at"] = stamp()
-            # Every subprocess must have returned before leaving this context.
-            # Check actual handles too; a leaked child must retain its files.
+            # 核对所有子进程退出后的实际句柄，保留仍被引用的文件。
             try:
-                result = subprocess.run(["lsof", "-nP", "-Fpn", "+D", str(area)],
-                                        capture_output=True, text=True, timeout=30)
-                if result.returncode not in (0, 1) or result.stderr:
-                    raise RuntimeError("build_handle_check_failed")
-                pid = None
-                for line in result.stdout.splitlines():
-                    if line.startswith("p"):
-                        pid = int(line[1:])
-                    elif line.startswith("n") and (pid != os.getpid() or Path(line[1:]) != lock_path):
-                        raise RuntimeError("build_payload_still_open")
+                if workspace_in_use(area, own_lock=lock_path):
+                    raise RuntimeError("build_payload_still_open")
                 logical = allocated = 0
                 seen = set()
                 for item in area.rglob("*"):

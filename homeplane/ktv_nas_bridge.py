@@ -9,55 +9,19 @@ import json
 import re
 import threading
 import time
-import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
 from fastapi import HTTPException
 
-from .ktv_service import ERRORS, JobRequest, atomic_json, local_host, nas_attempt_request_id, private_directory
+from integrations.ktv_public.audio_format import (
+    AUDIO_PLAYBACK_FIELDS, SFX_ACTIONS, SFX_TTL, VOCAL_PRESETS, audio_playback,
+)
 
-VOCAL_PRESETS = {"dry", "pop", "ktv", "power", "opera", "studio", "echo"}
-SFX_ACTIONS = {"sfx_applause", "sfx_cheer", "sfx_stop"}
-SFX_TTL = 5
-AUDIO_PLAYBACK_FIELDS = {"audio_capabilities", "vocal_preset", "vocal_preset_state",
-                         "sfx_seq", "sfx_action", "sfx_state"}
-
-
-# Kept aligned with the standalone NAS schema; neither side accepts vendor strings.
-def audio_playback(value):
-    """Fixed optional TV reports; missing fields keep pre-0.48 clients unavailable."""
-    caps = value.get("audio_capabilities", {"vocal_presets": ["dry"], "sfx": False})
-    if (not isinstance(caps, dict) or (not {"vocal_presets", "sfx"} <= set(caps) or set(caps) - {"vocal_presets", "sfx", "voice_protection"})
-            or not isinstance(caps["vocal_presets"], list) or not 1 <= len(caps["vocal_presets"]) <= len(VOCAL_PRESETS)
-            or any(not isinstance(p, str) or p not in VOCAL_PRESETS for p in caps["vocal_presets"])
-            or len(set(caps["vocal_presets"])) != len(caps["vocal_presets"])
-            or "dry" not in caps["vocal_presets"] or type(caps["sfx"]) is not bool):
-        raise ValueError("invalid_audio_capabilities")
-    voice = caps.get("voice_protection")
-    if "voice_protection" in caps and (
-            not isinstance(voice, dict) or (not {"state", "effective_gain"} <= set(voice) or set(voice)-{"state", "effective_gain", "mute_confirmed"})
-            or not isinstance(voice["state"], str)
-            or voice["state"] not in {"unavailable", "off", "preparing", "monitoring", "attenuated", "muted", "failed"}
-            or ("mute_confirmed" in voice and type(voice["mute_confirmed"]) is not bool)
-            or type(voice["effective_gain"]) is not int or not 0 <= voice["effective_gain"] <= 100):
-        raise ValueError("invalid_voice_protection")
-    preset, preset_state = value.get("vocal_preset", "dry"), value.get("vocal_preset_state", "unavailable")
-    seq, action, state = value.get("sfx_seq", 0), value.get("sfx_action", ""), value.get("sfx_state", "idle")
-    if (not isinstance(preset, str) or preset not in VOCAL_PRESETS
-            or not isinstance(preset_state, str) or preset_state not in {"unavailable", "pending", "requested", "applied", "failed"}
-            or type(seq) is not int or not 0 <= seq <= value["last_command"]
-            or not isinstance(action, str) or action not in SFX_ACTIONS | {""}
-            or not isinstance(state, str) or state not in {"idle", "pending", "playing", "stopped", "expired", "failed"}
-            or (seq == 0 and (action != "" or state != "idle"))
-            or (seq > 0 and (action not in SFX_ACTIONS or state == "idle"))
-            or (action == "sfx_stop" and state in {"pending", "playing"})):
-        raise ValueError("invalid_audio_playback")
-    return {"audio_capabilities": {"vocal_presets": list(caps["vocal_presets"]), "sfx": caps["sfx"],
-                                    **({"voice_protection": dict(voice)} if voice is not None else {})},
-            "vocal_preset": preset, "vocal_preset_state": preset_state,
-            "sfx_seq": seq, "sfx_action": action, "sfx_state": state}
+from .ktv_files import atomic_json, private_directory
+from .ktv_job_contracts import ERRORS, JobRequest, nas_attempt_request_id
+from .ktv_startup import local_host
 
 
 def command_is_fresh(command, now):

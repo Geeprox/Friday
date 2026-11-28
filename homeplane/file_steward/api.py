@@ -8,6 +8,7 @@ from homeplane.family_media.catalog import FamilyMediaError
 from homeplane.family_media.contracts import Digest
 
 from .contracts import (
+    StewardError,
     StewardBatchApproval,
     StewardJobRequest,
     StewardPageRequest,
@@ -16,7 +17,6 @@ from .contracts import (
 )
 from .extraction_queue import StewardQueueControl
 from .policy import StewardPolicyEdit
-from .service import StewardError
 from .settings_contracts import StewardSettingsEdit, StewardSettingsRequest
 from .local_text import SelectedTextPreparation, SelectedTextRequest
 

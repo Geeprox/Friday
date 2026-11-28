@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, HTTPException, Response
 
-from .catalog import PeopleError
+from .contracts import PeopleError
 from .contracts import Correct, Edit, Merge, Name, PeoplePage, ReviewVoice, Split
 
 

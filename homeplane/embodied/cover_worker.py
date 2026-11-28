@@ -35,7 +35,7 @@ async def run():
         if key in entries:
             if entries[key].get('requested_action',action)!=action:return {'status':'rejected','acknowledged':False,'reached_target':False}
             return entries[key]
-        from .ptz_control import atomic
+        from .camera_state import atomic
         entries[key]={'requested_action':action,'status':'unknown_outcome','acknowledged':False,'reached_target':False}
         atomic(path,dict(list(entries.items())[-128:]))
         await curtain.connect()

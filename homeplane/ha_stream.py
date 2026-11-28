@@ -8,8 +8,7 @@ import time
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from .ha import _date, _object, validate_registry, validate_states
-
+from .ha_protocol import parse_frame, parse_time, validate_registry, validate_states
 from .runtime_log import observe
 
 EVENT_TYPES = ("state_changed", "entity_registry_updated", "device_registry_updated", "area_registry_updated")
@@ -71,7 +70,7 @@ class HAStream:
         expected = self.subscriptions.get(frame.get("id"))
         if (frame.get("type") != "event" or type(frame.get("id")) is not int or expected is None or not isinstance(event, dict)
                 or event.get("event_type") != expected or not isinstance(event.get("data"), dict)
-                or _date(event.get("time_fired")) is None):
+                or parse_time(event.get("time_fired")) is None):
             raise ValueError("invalid_event_frame")
         self.counts["events_received"] += 1
         self.sequence += 1
@@ -90,7 +89,7 @@ class HAStream:
         await ws.send(json.dumps({"id": ident, "type": kind, **params}))
         async with asyncio.timeout(8):
             while True:
-                frame = _object(await ws.recv())
+                frame = parse_frame(await ws.recv())
                 if frame.get("type") == "event":
                     event = self.event(frame)
                     size = len(json.dumps(event).encode())
@@ -122,8 +121,8 @@ class HAStream:
         if signature(current) == signature(new):
             self.counts["duplicates"] += 1
             return None
-        new_time = _date(new.get("last_updated")) if new else None
-        current_time = _date(current.get("last_updated")) if current else None
+        new_time = parse_time(new.get("last_updated")) if new else None
+        current_time = parse_time(current.get("last_updated")) if current else None
         if new_time and current_time and new_time < current_time:
             self.counts["duplicates"] += 1
             return None
@@ -144,7 +143,7 @@ class HAStream:
             self.total_bytes, self.row_bytes[external] = total, size
             self.rows[external] = new
             self.receipts[external] = received
-        fired = _date(event["time_fired"])
+        fired = parse_time(event["time_fired"])
         age = (received - fired).total_seconds()
         eligible = (not initial and old is not None and new is not None and old["state"] != new["state"]
                     and old["state"] not in {"unknown", "unavailable"}
@@ -215,11 +214,11 @@ class HAStream:
                     self.connection_id, self.sequence, self.ident = str(uuid4()), 0, 0
                     self.subscriptions, self.buffer, self.buffer_bytes = {}, [], 0
                     async with asyncio.timeout(12):
-                        hello = _object(await ws.recv())
+                        hello = parse_frame(await ws.recv())
                         if hello.get("type") != "auth_required":
                             raise ValueError("invalid_handshake")
                         await ws.send(json.dumps({"type": "auth", "access_token": self.adapter._token}))
-                        auth = _object(await ws.recv())
+                        auth = parse_frame(await ws.recv())
                         if auth.get("type") != "auth_ok":
                             self.adapter._auth_ready = False
                             raise ValueError("authentication_rejected")
@@ -235,7 +234,7 @@ class HAStream:
                     while True:
                         try:
                             async with asyncio.timeout(max(.001, deadline - time.monotonic())):
-                                frame = _object(await ws.recv())
+                                frame = parse_frame(await ws.recv())
                         except TimeoutError:
                             await self.reconcile(ws)
                             deadline = time.monotonic() + self.refresh_seconds

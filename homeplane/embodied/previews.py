@@ -6,7 +6,8 @@ import json
 import secrets
 import time
 
-from .paths import DATA, MODELS, PROJECT, PYTHON, camera, camera_storage, capture_environment
+from .capture_environment import capture_environment
+from .paths import DATA, MODELS, PROJECT, PYTHON, camera, camera_storage
 from .camera_director import CameraDirector
 from .camera_follow_picker import CameraFollowPicker
 from .camera_intent import (

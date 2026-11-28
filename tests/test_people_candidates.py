@@ -4,7 +4,8 @@ import pytest
 from homeplane.people.live import IdentityStore
 from homeplane.recognition.contracts import Embedding
 from homeplane.recognition.artifacts import SFACE_SHA256
-from homeplane.people.catalog import PeopleCatalog,PeopleError
+from homeplane.people.catalog import PeopleCatalog
+from homeplane.people.contracts import PeopleError
 
 def face(a=1.,b=0.):return Embedding('face',SFACE_SHA256,(a,b)+(0.,)*126,False)
 PHOTO=b'\xff\xd8synthetic-face-only\xff\xd9'

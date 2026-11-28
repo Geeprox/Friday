@@ -11,7 +11,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from homeplane.people.catalog import PeopleCatalog, PeopleError
+from homeplane.people.catalog import PeopleCatalog
+from homeplane.people.contracts import PeopleError
 from homeplane.people.live import FaceIdentityPipeline, IdentityStore, analyze
 from homeplane.people.live_api import create_router
 from homeplane.recognition.artifacts import SFACE_SHA256

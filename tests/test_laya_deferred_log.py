@@ -8,7 +8,7 @@ pytest.importorskip('arl', reason='Optional shared ARL SDK')
 from arl.contracts import Fault
 from homeplane.runtime_log import RuntimeLog
 from homeplane.shared_laya import SharedLaya, VERSION
-from homeplane.shared_laya_service import DeferredLog, LayaEngine
+from homeplane.shared_laya_engine import DeferredLog, LayaEngine
 
 Q={'x':{'type':'choice','instructions':'synthetic','criteria':{'a':'one','b':'two'}}}
 

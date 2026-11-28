@@ -12,37 +12,8 @@ import re
 import stat
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
-
-from .geek_session import GeekSessionView
-
-
-class GeekGraph(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    id: str = Field(min_length=1, max_length=256)
-    name: str | None = Field(default=None, max_length=128)
-    source_enabled: bool | None = None
-    normalization: Literal["opaque"] = "opaque"
-    readable: Literal[True] = True
-    writable: Literal[False] = False
-    fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
-    raw_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-
-
-class GeekInventoryView(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    schema_version: Literal[1] = 1
-    session: GeekSessionView
-    status: Literal["ready", "unavailable", "stale", "integrity_failed"]
-    observed_at: str | None = None
-    fingerprint: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
-    graphs: list[GeekGraph] = Field(default_factory=list, max_length=64)
-    coverage: Literal["geek_visible_only"] = "geek_visible_only"
-    simulated: Literal[False] = False
-    raw_graphs_public: Literal[False] = False
-    external_rules_intercepted: Literal[False] = False
+from .geek_contracts import GeekGraph
 
 
 def _read(path: Path, limit: int):

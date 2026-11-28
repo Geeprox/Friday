@@ -10,7 +10,7 @@ import sys
 import time
 
 from .paths import PRIVATE, camera, camera_storage
-from .ptz_control import atomic, read_lease
+from .camera_state import atomic, read_lease
 
 logging.getLogger('miot').setLevel(logging.CRITICAL)
 

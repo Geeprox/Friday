@@ -56,6 +56,13 @@ async def before_fall(monitor, **source):
     await monitor.runtime.sync_policy()
 
 
+async def wait_for_recording_failure(runtime):
+    """等留档器进入重试状态，之后才能推进模拟时钟。"""
+    async with asyncio.timeout(5):
+        while runtime.recording_status()['error'] != 'safety_storage_unavailable':
+            await asyncio.sleep(.01)
+
+
 def hold_recording_write(store, monkeypatch):
     entered, release = threading.Event(), threading.Event()
     create = store.create
@@ -643,6 +650,7 @@ async def test_safety_observation_continues_and_pending_incident_survives_expire
 
 @pytest.mark.asyncio
 async def test_uncertain_commit_readback_does_not_create_a_duplicate(monitor, monkeypatch):
+    monitor.store.configure(monitor.store.read_policy().model_copy(update={'announce': False}))
     create = monitor.store.create
     ids = []
 
@@ -656,11 +664,10 @@ async def test_uncertain_commit_readback_does_not_create_a_duplicate(monitor, mo
     monkeypatch.setattr(monitor.store, 'create', commit_then_lose_reply)
     await before_fall(monitor)
     await frame(monitor)
-    for _ in range(10):
-        await asyncio.sleep(.01)
-        monitor.clock[0] += .25
-        await frame(monitor, sync=True)
-    await monitor.runtime.drain()
+    await wait_for_recording_failure(monitor.runtime)
+    monitor.clock[0] += .25
+    await frame(monitor, sync=True)
+    await asyncio.wait_for(monitor.runtime.drain(), 5)
     assert len(ids) >= 2, 'the recorder abandoned an uncertain write without reconciling it'
     assert len(set(ids)) == len(monitor.store.events()) == 1
 
@@ -834,6 +841,7 @@ async def test_delayed_labels_do_not_stop_observation_or_name_an_expired_identit
 
 @pytest.mark.asyncio
 async def test_uncertain_post_frame_commit_is_reconciled_without_duplicate_frames(monitor, monkeypatch):
+    monitor.store.configure(monitor.store.read_policy().model_copy(update={'announce': False}))
     append = monitor.store.append_frame
     calls = []
 
@@ -847,14 +855,18 @@ async def test_uncertain_post_frame_commit_is_reconciled_without_duplicate_frame
     monkeypatch.setattr(monitor.store, 'append_frame', uncertain)
     await before_fall(monitor)
     await frame(monitor)
-    await monitor.runtime.drain()
-    for _ in range(12):
+    await asyncio.wait_for(monitor.runtime.drain(), 5)
+    monitor.clock[0] += .25
+    await frame(monitor, sync=True)
+    await wait_for_recording_failure(monitor.runtime)
+    for _ in range(11):
         monitor.clock[0] += .25
         await frame(monitor, sync=True)
-        await asyncio.sleep(.01)
-    await monitor.runtime.drain()
-    frames = monitor.store.events()[0]['frames']
-    assert len(calls) > len(set(calls)) and len({f['at'] for f in frames}) == len(frames)
+        await asyncio.wait_for(monitor.runtime.drain(), 5)
+    event, = monitor.store.events()
+    frames = event['frames']
+    assert calls[0] == calls[1]
+    assert len({f['at'] for f in frames}) == len(frames)
     assert len(frames) <= 22
 
 

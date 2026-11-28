@@ -14,6 +14,11 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+if __package__:
+    from .workspace_references import workspace_in_use
+else:
+    from workspace_references import workspace_in_use
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -31,17 +36,8 @@ def clean_owned(root):
     )
     if tracked.returncode != 128:
         raise ValueError("ci_workspace_git_boundary_changed")
-    opened = subprocess.run(
-        ["lsof", "-nP", "+D", str(root), "-F", "pn"], capture_output=True, text=True, timeout=20
-    )
-    if opened.returncode not in {0, 1}:
-        raise ValueError("ci_workspace_reference_check_failed")
-    pid = None
-    for line in opened.stdout.splitlines():
-        if line.startswith("p"):
-            pid = int(line[1:])
-        elif line.startswith("n") and (pid != os.getpid() or line[1:] != str(root / "running.lock")):
-            raise ValueError("ci_workspace_in_use")
+    if workspace_in_use(root, own_lock=root / "running.lock"):
+        raise ValueError("ci_workspace_in_use")
     for path in root.rglob("*"):
         entry = path.lstat()
         if entry.st_uid != os.getuid() or not (
