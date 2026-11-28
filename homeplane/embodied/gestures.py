@@ -126,7 +126,7 @@ def classify_hand(joints, ratio=16 / 9, *, world_horns=False):
                     and thumb_angle > 110 and thumb_reach > palm * .5):
                 return "shaka"
         # 浅角度时要求拇指伸直、伸出足够远，并先排除点赞和侧伸小指的电话手势。
-        if (protrudes_below_fist and not upward_thumb and thumb_straight and thumb_angle > 155
+        if (clear and protrudes_below_fist and not upward_thumb and thumb_straight and thumb_angle > 155
                 and thumb_reach > palm * .75 and dy > max(palm * .20, abs(dx) * .27)):
             return "thumb_down"
         # 侧视时拇指末段可接近水平。用完整拳面交叉确认指尖确实从拳的下侧伸出。

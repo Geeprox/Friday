@@ -188,6 +188,11 @@ def test_downward_diagonal_both_hands(degrees, expected, mirror):
         p["x"] = .5 + (.75 if not mirror else -.75)*(x*math.cos(angle)-y*math.sin(angle))*9/16
         p["y"] = .5 + .75*(x*math.sin(angle)+y*math.cos(angle))
     assert classify_hand(joints) == expected
+    if degrees == 70:
+        joints["thumbCMC"]["confidence"] = .54
+        assert classify_hand(joints) != "thumb_down"
+        joints["thumbCMC"]["confidence"] = .55
+        assert classify_hand(joints) == "thumb_down"
 
 
 @pytest.mark.parametrize("mirror", [False, True])
